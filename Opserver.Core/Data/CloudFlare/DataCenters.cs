@@ -5,7 +5,7 @@ using System.Net;
 
 namespace StackExchange.Opserver.Data.CloudFlare
 {
-    public class DataCenters
+    public static class DataCenters
     {
         private static Dictionary<string, List<IPNet>> _allDCs;
 
@@ -41,8 +41,7 @@ namespace StackExchange.Opserver.Data.CloudFlare
         {
             foreach (var ip in addresses)
             {
-                string masked;
-                if (_cached.TryGetValue(ip, out masked)) yield return masked;
+                if (_cached.TryGetValue(ip, out string masked)) yield return masked;
                 else yield return _cached[ip] = GetMasked(ip);
             }
         }
@@ -58,11 +57,11 @@ namespace StackExchange.Opserver.Data.CloudFlare
                 var bytes = address.GetAddressBytes();
 
                 if (mr.CIDR >= 24)
-                    return "*.*.*." + bytes[3];
+                    return "*.*.*." + bytes[3].ToString();
                 if (mr.CIDR >= 16)
-                    return "*.*." + bytes[2] + "." + bytes[3];
+                    return "*.*." + bytes[2].ToString() + "." + bytes[3].ToString();
                 if (mr.CIDR >= 8)
-                    return "*." + bytes[1] + "." + bytes[2] + "." + bytes[3];
+                    return "*." + bytes[1].ToString() + "." + bytes[2].ToString() + "." + bytes[3].ToString();
 
                 return address.ToString();
             }

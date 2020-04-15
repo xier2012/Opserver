@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Threading.Tasks;
 
@@ -12,21 +13,23 @@ namespace StackExchange.Opserver.Data.Dashboard.Providers
 
         public override int MinSecondsBetweenPolls => 10;
         public override string NodeType => "None";
-        public override IEnumerable<Cache> DataPollers { get { yield break; } }
-        protected override IEnumerable<MonitorStatus> GetMonitorStatus() { yield break; }
+        public override IEnumerable<Cache> DataPollers => Enumerable.Empty<Cache>();
+        protected override IEnumerable<MonitorStatus> GetMonitorStatus() => Enumerable.Empty<MonitorStatus>();
         protected override string GetMonitorStatusReason() => null;
 
-        private static readonly List<Node> _allNodes = new List<Node>();
+        private static readonly List<Node> EmptyAllNodes = new List<Node>();
 
-        public override IEnumerable<string> GetExceptions() { yield break; }
+        public override IEnumerable<string> GetExceptions() => Enumerable.Empty<string>();
 
-        public override List<Node> AllNodes => _allNodes;
-        public override IEnumerable<Node> GetNodesByIP(IPAddress ip) => _allNodes;
+        public override List<Node> AllNodes => EmptyAllNodes;
+        public override IEnumerable<Node> GetNodesByIP(IPAddress ip) => EmptyAllNodes;
 
-        public override Task<List<GraphPoint>> GetCPUUtilization(Node node, DateTime? start, DateTime? end, int? pointCount = null) => Task.FromResult(new List<GraphPoint>());
-        public override Task<List<GraphPoint>> GetMemoryUtilization(Node node, DateTime? start, DateTime? end, int? pointCount = null) => Task.FromResult(new List<GraphPoint>());
-        public override Task<List<DoubleGraphPoint>> GetNetworkUtilization(Node node, DateTime? start, DateTime? end, int? pointCount = null) => Task.FromResult(new List<DoubleGraphPoint>());
-        public override Task<List<DoubleGraphPoint>> GetUtilization(Interface volume, DateTime? start, DateTime? end, int? pointCount = null) => Task.FromResult(new List<DoubleGraphPoint>());
-        public override Task<List<GraphPoint>> GetUtilization(Volume volume, DateTime? start, DateTime? end, int? pointCount = null) => Task.FromResult(new List<GraphPoint>());
+        public override Task<List<GraphPoint>> GetCPUUtilizationAsync(Node node, DateTime? start, DateTime? end, int? pointCount = null) => Task.FromResult(new List<GraphPoint>());
+        public override Task<List<GraphPoint>> GetMemoryUtilizationAsync(Node node, DateTime? start, DateTime? end, int? pointCount = null) => Task.FromResult(new List<GraphPoint>());
+        public override Task<List<DoubleGraphPoint>> GetNetworkUtilizationAsync(Node node, DateTime? start, DateTime? end, int? pointCount = null) => Task.FromResult(new List<DoubleGraphPoint>());
+        public override Task<List<DoubleGraphPoint>> GetVolumePerformanceUtilizationAsync(Node node, DateTime? start, DateTime? end, int? pointCount = null) => Task.FromResult(new List<DoubleGraphPoint>());
+        public override Task<List<DoubleGraphPoint>> GetUtilizationAsync(Interface iface, DateTime? start, DateTime? end, int? pointCount = null) => Task.FromResult(new List<DoubleGraphPoint>());
+        public override Task<List<DoubleGraphPoint>> GetPerformanceUtilizationAsync(Volume volume, DateTime? start, DateTime? end, int? pointCount = null) => Task.FromResult(new List<DoubleGraphPoint>());
+        public override Task<List<GraphPoint>> GetUtilizationAsync(Volume volume, DateTime? start, DateTime? end, int? pointCount = null) => Task.FromResult(new List<GraphPoint>());
     }
 }

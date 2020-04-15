@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Dynamic;
 using System.Linq;
@@ -10,9 +11,29 @@ namespace StackExchange.Opserver.Monitoring
 {
     internal static class Wmi
     {
-        internal static WmiQuery Query(string machineName, string query, string wmiNamespace = @"root\cimv2")
+        private const string defaultWmiNamespace = @"root\cimv2";
+
+        internal static WmiQuery Query(string machineName, string query, string wmiNamespace = defaultWmiNamespace)
         {
             return new WmiQuery(machineName, query, wmiNamespace);
+        }
+
+        internal static async Task<bool> ClassExists(string machineName, string @class, string wmiNamespace = defaultWmiNamespace)
+        {
+            // it's much faster trying to query something potentially non existent and catching an exception than to query the "meta_class" table.
+            var query = $"SELECT * FROM {@class}";
+
+            try
+            {
+                using (var q = Query(machineName, query, wmiNamespace))
+                {
+                    return (await q.GetFirstResultAsync().ConfigureAwait(false)) != null;
+                }
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private static readonly ConnectionOptions _localOptions, _remoteOptions;
@@ -38,7 +59,7 @@ namespace StackExchange.Opserver.Monitoring
             {
                 _remoteOptions.Username = username;
                 _remoteOptions.Password = password;
-            }       
+            }
         }
 
         private static ConnectionOptions GetConnectOptions(string machineName)
@@ -59,21 +80,28 @@ namespace StackExchange.Opserver.Monitoring
 
         internal class WmiQuery : IDisposable
         {
-            ManagementObjectCollection _data;
-            ManagementObjectSearcher _searcher;
+            private static readonly ConcurrentDictionary<string, ManagementScope> _scopeCache = new ConcurrentDictionary<string, ManagementScope>();
+            private static readonly ConcurrentDictionary<string, ManagementObjectSearcher> _searcherCache = new ConcurrentDictionary<string, ManagementObjectSearcher>();
+
+            private ManagementObjectCollection _data;
+            private readonly ManagementObjectSearcher _searcher;
             private readonly string _machineName;
             private readonly string _rawQuery;
+            private readonly string _wmiNamespace;
 
             public WmiQuery(string machineName, string q, string wmiNamespace = @"root\cimv2")
             {
                 _machineName = machineName;
                 _rawQuery = q;
-                if (string.IsNullOrEmpty(machineName))
+                _wmiNamespace = wmiNamespace;
+                if (machineName.IsNullOrEmpty())
                     throw new ArgumentException("machineName should not be empty.");
 
                 var connectionOptions = GetConnectOptions(machineName);
-                var scope = new ManagementScope($@"\\{machineName}\{wmiNamespace}", connectionOptions);
-                _searcher = new ManagementObjectSearcher(scope, new ObjectQuery(q), new EnumerationOptions{Timeout = connectionOptions.Timeout});
+
+                var path = $@"\\{machineName}\{wmiNamespace}";
+                var scope = _scopeCache.GetOrAdd(path, x => new ManagementScope(x, connectionOptions));
+                _searcher = _searcherCache.GetOrAdd(path + q, x => new ManagementObjectSearcher(scope, new ObjectQuery(q), new EnumerationOptions { Timeout = connectionOptions.Timeout }));
             }
 
             public Task<ManagementObjectCollection> Result
@@ -85,21 +113,45 @@ namespace StackExchange.Opserver.Monitoring
                         throw new InvalidOperationException("Attempt to use disposed query.");
                     }
 
-                    return _data != null ? Task.FromResult(_data) : Task.Run(() => _data = _searcher.Get());
+                    return _data != null ? Task.FromResult(_data) : Task.Run(() =>
+                    {
+                        try { return _data = _searcher.Get(); }
+                        catch (Exception ex)
+                        {
+
+                            // Without this WMI queries will continue to fail after a machine reboots.
+                            if (ex is System.Runtime.InteropServices.COMException)
+                            {
+                                foreach (var scopeCacheItem in _scopeCache)
+                                {
+                                    if (scopeCacheItem.Key.StartsWith($@"\\{_machineName}"))
+                                        _scopeCache.TryRemove(scopeCacheItem.Key, out var scopeCacheValue);
+                                }
+                                foreach (var searchCacheItem in _searcherCache)
+                                {
+                                    if (searchCacheItem.Key.StartsWith($@"\\{_machineName}"))
+                                        _searcherCache.TryRemove(searchCacheItem.Key, out var searchCacheValue);
+                                }
+                            }
+
+                            throw new Exception($"Failed to query {_wmiNamespace} on {_machineName}", ex);
+
+                        }
+                    });
                 }
             }
 
-            public async Task<IEnumerable<dynamic>> GetDynamicResult()
+            public async Task<IEnumerable<dynamic>> GetDynamicResultAsync()
             {
                 using (MiniProfiler.Current.CustomTiming("WMI", _rawQuery, _machineName))
-                    return (await Result).Cast<ManagementObject>().Select(mo => new WmiDynamic(mo));
+                    return (await Result.ConfigureAwait(false)).Cast<ManagementObject>().Select(mo => new WmiDynamic(mo));
             }
 
-            public async Task<dynamic> GetFirstResult()
+            public async Task<dynamic> GetFirstResultAsync()
             {
                 ManagementObject obj;
                 using (MiniProfiler.Current.CustomTiming("WMI", _rawQuery, _machineName))
-                    obj = (await Result).Cast<ManagementObject>().FirstOrDefault();
+                    obj = (await Result.ConfigureAwait(false)).Cast<ManagementObject>().FirstOrDefault();
                 return obj == null ? null : new WmiDynamic(obj);
             }
 
@@ -107,17 +159,26 @@ namespace StackExchange.Opserver.Monitoring
             {
                 _data?.Dispose();
                 _data = null;
-                _searcher?.Dispose();
-                _searcher = null;
             }
         }
 
-        class WmiDynamic : DynamicObject
+        private class WmiDynamic : DynamicObject
         {
-            readonly ManagementObject _obj;
+            private readonly ManagementObject _obj;
             public WmiDynamic(ManagementObject obj)
             {
                 _obj = obj;
+            }
+
+            public override bool TryConvert(ConvertBinder binder, out object result)
+            {
+                if (binder.Type == typeof(ManagementObject))
+                {
+                    result = _obj;
+                    return true;
+                }
+
+                return base.TryConvert(binder, out result);
             }
 
             public override bool TryGetMember(GetMemberBinder binder, out object result)
@@ -133,6 +194,23 @@ namespace StackExchange.Opserver.Monitoring
                     return false;
                 }
             }
+
+            public override bool TryInvokeMember(InvokeMemberBinder binder, object[] args, out object result)
+            {
+                try
+                {
+                    result = _obj.InvokeMethod(binder.Name, args);
+                    return true;
+                }
+                catch
+                {
+                    result = null;
+                    return false;
+                }
+            }
+
+            public override IEnumerable<string> GetDynamicMemberNames()
+                => _obj.Properties.Cast<PropertyData>().Select(x => x.Name);
         }
     }
 }

@@ -2,7 +2,6 @@
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Web;
-using System.Web.WebPages;
 using StackExchange.Exceptional;
 using StackExchange.Opserver.Helpers;
 using StackExchange.Opserver.Models;
@@ -29,26 +28,7 @@ namespace StackExchange.Opserver
         /// <summary>
         /// Is the current request ajax? Determined by checking the X-Requested-With header
         /// </summary>
-        public static bool IsAjaxRequest => Request != null && Request.Headers["X-Requested-With"] == "XMLHttpRequest";
-
-        /// <summary>
-        /// Whether to render chart images at double resolution or not
-        /// </summary>
-        /// <remarks>Long-term, this will need updating to observe the pixel ratio which will grow to higher than 2 as displays improve</remarks>
-        public static bool IsHighDPI
-        {
-            get
-            {
-                // HACK, Hackity hack hack hack, but it works for now.
-                var cookie = Request.Cookies["highDPI"];
-                return cookie != null && cookie.Value == "true";
-            }
-        }
-
-        /// <summary>
-        /// Gets if the current request is for a mobile view
-        /// </summary>
-        public static bool IsMobile => new HttpContextWrapper(Context).GetOverriddenBrowser().IsMobileDevice;
+        public static bool IsAjaxRequest => Request?.Headers["X-Requested-With"] == "XMLHttpRequest";
 
         /// <summary>
         /// Gets the current user from the request
@@ -58,11 +38,10 @@ namespace StackExchange.Opserver
         public static bool IsSecureConnection =>
             Request.IsSecureConnection ||
             // This can be "http", "https", or the more fun "https, http, https, https" even.
-            (Request.Headers["X-Forwarded-Proto"] != null &&
-             Request.Headers["X-Forwarded-Proto"].StartsWith("https"));
+            (Request.Headers["X-Forwarded-Proto"]?.StartsWith("https") == true);
 
         private static readonly Regex _lastIpAddress = new Regex(@"\b([0-9]{1,3}\.){3}[0-9]{1,3}$", RegexOptions.Compiled | RegexOptions.ExplicitCapture);
-        
+
         /// <summary>
         /// Gets the IP this request came from, gets the real IP when behind a proxy
         /// </summary>
@@ -90,47 +69,52 @@ namespace StackExchange.Opserver
         private static bool IsPrivateIP(string s)
         {
             //TODO: convert to IPNet check and include 172.16.0.0/12
-            return (s.StartsWith("192.168.") || s.StartsWith("10.") || s.StartsWith("127.0.0."));
+            return s.StartsWith("192.168.") || s.StartsWith("10.") || s.StartsWith("127.0.0.");
         }
 
         /// <summary>
-        /// manually write an exception to our standard exception log
+        /// Manually write an exception to our standard exception log.
         /// </summary>
-        public static void LogException(string message, Exception innerException, string key = null, int? reLogDelaySeconds = null)
+        /// <param name="message">The message to log.</param>
+        /// <param name="innerException">The inner exception to log.</param>
+        public static void LogException(string message, Exception innerException)
         {
             var ex = new Exception(message, innerException);
             LogException(ex);
         }
 
         /// <summary>
-        /// manually write an exception to our standard exception log
+        /// Manually write an exception to our standard exception log.
         /// </summary>
-        public static void LogException(Exception ex, string key = null, int? reLogDelaySeconds = null)
+        /// <param name="exception">The <see cref="Exception"/> to log.</param>
+        /// <param name="key">(Optional) The throttle cache key.</param>
+        public static void LogException(Exception exception, string key = null)
         {
             if (!ShouldLog(key)) return;
-            ErrorStore.LogException(ex, Context, appendFullStackTrace: true);
+            exception.Log(Context);
             RecordLogged(key);
         }
 
         /// <summary>
-        /// record that an exception was logged in local cache for the specified length of time (default of 30 minutes)
+        /// Record that an exception was logged in local cache for the specified length of time.
         /// </summary>
-        private static void RecordLogged(string key, int? reLogDelaySeconds = 30 * 60 * 60)
+        /// <param name="key">The throttle cache key.</param>
+        /// <param name="relogDelay">The duration of time to wait before logging again (default: 30 minutes).</param>
+        private static void RecordLogged(string key, TimeSpan? relogDelay = null)
         {
-            if (key.IsNullOrEmpty() || !reLogDelaySeconds.HasValue) return;
-            LocalCache.Set("ExceptionLogRetry-" + key, true, reLogDelaySeconds.Value);
+            relogDelay = relogDelay ?? 30.Minutes();
+            if (key.IsNullOrEmpty() || !relogDelay.HasValue) return;
+            LocalCache.Set("ExceptionLogRetry-" + key, true, relogDelay.Value);
         }
 
         /// <summary>
-        /// see if an exception with the given key should be logged, based on if it was logged recently
+        /// See if an exception with the given key should be logged, based on if it was logged recently.
         /// </summary>
+        /// <param name="key">The throttle cache key.</param>
         private static bool ShouldLog(string key)
         {
             if (key.IsNullOrEmpty()) return true;
             return !LocalCache.Get<bool?>("ExceptionLogRetry-"+key).GetValueOrDefault();
         }
-        
-        public static void LogRequest() { Interlocked.Increment(ref requestCount); }
-        private static int requestCount;
     }
 }

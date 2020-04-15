@@ -6,23 +6,15 @@ namespace StackExchange.Opserver.Data.SQL
     public partial class SQLInstance
     {
         private Cache<List<WaitStatRecord>> _waitStats;
-        public Cache<List<WaitStatRecord>> WaitStats
-        {
-            get
-            {
-                return _waitStats ?? (_waitStats = new Cache<List<WaitStatRecord>>
+        public Cache<List<WaitStatRecord>> WaitStats =>
+            _waitStats ?? (_waitStats = GetSqlCache(
+                nameof(WaitStats), conn =>
                 {
-                    CacheForSeconds = 60,
-                    UpdateCache = UpdateFromSql("WaitStats", conn =>
-                    {
-                        var sql = GetFetchSQL<WaitStatRecord>();
-                        return conn.QueryAsync<WaitStatRecord>(sql, new { secondsBetween = 15 });
-                    })
-                });
-            }
-        }
+                    var sql = GetFetchSQL<WaitStatRecord>();
+                    return conn.QueryAsync<WaitStatRecord>(sql, new {secondsBetween = 15});
+                }));
 
-        public class WaitStatRecord : ISQLVersionedObject
+        public class WaitStatRecord : ISQLVersioned
         {
             public Version MinVersion => SQLServerVersions.SQL2005.RTM;
 
@@ -78,7 +70,7 @@ namespace StackExchange.Opserver.Data.SQL
 
             public double AverageTaskCount => (double)WaitTaskCount / SecondsBetween;
 
-            internal string FetchSQL = @"
+            public string GetFetchSQL(Version v) => @"
 Declare @delayInterval char(8) = Convert(Char(8), DateAdd(Second, @secondsBetween, '00:00:00'), 108);
 
 If Object_Id('tempdb..#PWaitStats') Is Not Null
@@ -114,12 +106,8 @@ Select cw.WaitType,
  Where cw.WaitTaskCount - pw.WaitTaskCount > 0
 
 Drop Table #PWaitStats;
-Drop Table #CWaitStats;";
-
-            public string GetFetchSQL(Version v)
-            {
-                return FetchSQL;
-            }
+Drop Table #CWaitStats;
+";
         }
     }
 }

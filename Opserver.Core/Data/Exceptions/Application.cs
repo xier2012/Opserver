@@ -1,8 +1,10 @@
 ﻿using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Text.RegularExpressions;
 
 namespace StackExchange.Opserver.Data.Exceptions
-{        
+{
     /// <summary>
     /// Represents an application and its store location
     /// </summary>
@@ -27,9 +29,26 @@ namespace StackExchange.Opserver.Data.Exceptions
                        {
                            Name = Name,
                            ExceptionCount = ExceptionCount,
-                           MostRecent = MostRecent.ToRelativeTime()
+                           MostRecent = MostRecent?.ToRelativeTime()
                        };
         }
+
+        public void ClearCounts()
+        {
+            ExceptionCount = 0;
+            RecentExceptionCount = 0;
+            MostRecent = null;
+        }
+    }
+
+    public class ApplicationGroup
+    {
+        public string Name { get; internal set; }
+        public List<Application> Applications { get; internal set; } = new List<Application>();
+        public int Total => Applications.Sum(a => a.ExceptionCount);
+
+        public Application this[string name] =>
+            Applications.Find(a => a.Name == name) ?? Applications.Find(a => a.ShortName == name);
     }
 
     public class JSONApplication

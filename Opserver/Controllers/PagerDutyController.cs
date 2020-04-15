@@ -12,33 +12,35 @@ namespace StackExchange.Opserver.Controllers
     [OnlyAllow(Roles.PagerDuty)]
     public partial class PagerDutyController : StatusController
     {
-        protected override ISecurableSection SettingsSection => Current.Settings.PagerDuty;
+        public override ISecurableModule SettingsModule => Current.Settings.PagerDuty;
 
-        protected override string TopTab => TopTabs.BuiltIn.PagerDuty;
+        public override TopTab TopTab => new TopTab("PagerDuty", nameof(Dashboard), this, 45)
+        {
+            GetMonitorStatus = () => PagerDutyAPI.Instance.MonitorStatus
+        };
 
         public PagerDutyPerson CurrentPagerDutyPerson
         {
             get
             {
-                var allUsers = PagerDutyApi.Instance.AllUsers.SafeData(true);
-                var pdMap = PagerDutyApi.Instance.Settings.UserNameMap.FirstOrDefault(
-                    un => un.OpServerName == Current.User.AccountName);
+                var currentAccount = Current.User.AccountName;
+                var allUsers = PagerDutyAPI.Instance.AllUsers.SafeData(true);
+                var pdMap = PagerDutyAPI.Instance.Settings.UserNameMap.Find(un => un.OpServerName == currentAccount);
                 return pdMap != null
                     ? allUsers.Find(u => u.EmailUserName == pdMap.EmailUser)
-                    : allUsers.FirstOrDefault(u => string.Equals(u.EmailUserName, Current.User.AccountName, StringComparison.OrdinalIgnoreCase));
+                    : allUsers.Find(u => string.Equals(u.EmailUserName, currentAccount, StringComparison.OrdinalIgnoreCase));
             }
         }
 
         [Route("pagerduty")]
-        public ActionResult PagerDutyDashboard()
+        public async Task<ActionResult> Dashboard()
         {
-            var i = PagerDutyApi.Instance;
-            i.WaitForFirstPoll(5000);
-            
+            var i = PagerDutyAPI.Instance;
+            await i.PollAsync().ConfigureAwait(false);
+
             var vd = new PagerDutyModel
             {
-                Schedule = i.GetSchedule(),
-                OnCallToShow = i.Settings.OnCallToShow,
+                Schedule = i.GetOnCall(),
                 CachedDays = i.Settings.DaysToCache,
                 AllIncidents = i.Incidents.SafeData(true),
                 CurrentPagerDutyPerson = CurrentPagerDutyPerson
@@ -47,9 +49,9 @@ namespace StackExchange.Opserver.Controllers
         }
 
         [Route("pagerduty/incident/detail/{id}")]
-        public async Task<ActionResult> PagerDutyIncidentDetail(int id)
+        public async Task<ActionResult> IncidentDetail(int id)
         {
-            var incident = PagerDutyApi.Instance.Incidents.Data.First(i => i.Number == id);
+            var incident = PagerDutyAPI.Instance.Incidents.Data.First(i => i.Number == id);
             var vd = new PagerDutyIncidentModel
             {
                 Incident = incident,
@@ -60,9 +62,9 @@ namespace StackExchange.Opserver.Controllers
         }
 
         [Route("pagerduty/escalation/full")]
-        public ActionResult PagerDutyFullEscalation()
+        public ActionResult FullEscalation()
         {
-            return View("PagerDuty.EscFull", PagerDutyApi.Instance.GetSchedule());
+            return View("PagerDuty.EscFull", PagerDutyAPI.Instance.OnCallInfo.Data);
         }
     }
 }

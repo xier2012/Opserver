@@ -10,9 +10,10 @@ namespace StackExchange.Opserver.Models.Security
 {
     public class ActiveDirectoryProvider : SecurityProvider
     {
-        private List<string> Servers { get; set; }
-        private string AuthUser { get; set; }
-        private string AuthPassword { get; set; }
+        private HashSet<string> GroupNames { get; } = new HashSet<string>();
+        private List<string> Servers { get; }
+        private string AuthUser { get; }
+        private string AuthPassword { get; }
 
         public ActiveDirectoryProvider(SecuritySettings settings)
         {
@@ -33,20 +34,22 @@ namespace StackExchange.Opserver.Models.Security
             var groups = groupNames.Split(StringSplits.Comma_SemiColon);
             if (groupNames.Length == 0) return false;
 
-            return groups.Any(g =>
-                                  {
-                                      var members = GetGroupMembers(g);
-                                      return members != null && members.Contains(accountName, StringComparer.InvariantCultureIgnoreCase);
-                                  });
+            return groups.Any(g => GetGroupMembers(g)?.Contains(accountName, StringComparer.InvariantCultureIgnoreCase) == true);
         }
-        
+
         public override void PurgeCache()
         {
-            //Current.LocalCache.RemoveAll("AD-Members-*");
+            var toClear = GroupNames.ToList();
+            GroupNames.Clear();
+            foreach (var g in toClear)
+            {
+                Current.LocalCache.Remove("ADMembers-" + g);
+            }
         }
 
         public override List<string> GetGroupMembers(string groupName)
         {
+            GroupNames.Add(groupName);
             return Current.LocalCache.GetSet<List<string>>("ADMembers-" + groupName,
                 (old, ctx) =>
                 {
@@ -61,12 +64,12 @@ namespace StackExchange.Opserver.Models.Security
                             });
                         return group ?? old ?? new List<string>();
                     }
-                }, 5 * 60, 60 * 60 * 24);
+                }, 5.Minutes(), 24.Hours());
         }
 
         public T RunCommand<T>(Func<PrincipalContext, T> command, int retries = 3)
         {
-            if (Servers != null && Servers.Any())
+            if (Servers?.Count > 0)
             {
                 foreach (var s in Servers) // try all servers in order, the first success will win
                 {
@@ -75,7 +78,9 @@ namespace StackExchange.Opserver.Models.Security
                         using (var pc = UserAuth
                                             ? new PrincipalContext(ContextType.Domain, s, AuthUser, AuthPassword)
                                             : new PrincipalContext(ContextType.Domain, s))
+                        {
                             return command(pc);
+                        }
                     }
                     catch (Exception ex)
                     {

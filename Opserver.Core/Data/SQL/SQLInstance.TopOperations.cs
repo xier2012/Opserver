@@ -4,49 +4,39 @@ using System.ComponentModel;
 using System.IO;
 using System.Linq;
 using System.Xml.Serialization;
+using Dapper;
 using StackExchange.Opserver.Data.SQL.QueryPlans;
 
 namespace StackExchange.Opserver.Data.SQL
 {
     public partial class SQLInstance
     {
-        public Cache<List<TopOperation>> GetTopOperations(TopSearchOptions options = null)
+        public LightweightCache<List<TopOperation>> GetTopOperations(TopSearchOptions options = null)
         {
-            return new Cache<List<TopOperation>>
-            {
-                CacheKey = GetCacheKey("TopOperations-" + (options?.GetHashCode() ?? 0)),
-                CacheForSeconds = 15,
-                CacheStaleForSeconds = 5*60,
-                UpdateCache = UpdateFromSql("Top Operations", conn =>
+            return TimedCache(nameof(GetTopOperations) + "-" + (options?.GetHashCode() ?? 0).ToString(),
+                conn =>
                 {
                     var hasOptions = options != null;
                     var sql = string.Format(GetFetchSQL<TopOperation>(),
-                        (hasOptions ? options.ToSQLWhere() + options.ToSQLOrder() : ""),
-                        (hasOptions ? options.ToSQLSearch() : ""));
+                        hasOptions ? options.ToSQLWhere() + options.ToSQLOrder() : "",
+                        hasOptions ? options.ToSQLSearch() : "");
                     sql = sql.Replace("query_plan AS QueryPlan,", "")
-                             .Replace("CROSS APPLY sys.dm_exec_query_plan(PlanHandle) AS qp", "");
-                    return conn.QueryAsync<TopOperation>(sql, options);
-                })
-            };
+                        .Replace("CROSS APPLY sys.dm_exec_query_plan(PlanHandle) AS qp", "");
+                    return conn.Query<TopOperation>(sql, options).AsList();
+                }, 10.Seconds(), 5.Minutes());
         }
 
-        public Cache<TopOperation> GetTopOperation(byte[] planHandle, int? statementStartOffset = null)
+        public LightweightCache<TopOperation> GetTopOperation(byte[] planHandle, int? statementStartOffset = null)
         {
             var clause = " And (qs.plan_handle = @planHandle OR qs.sql_handle = @planHandle)";
             if (statementStartOffset.HasValue) clause += " And qs.statement_start_offset = @statementStartOffset";
-            string sql = string.Format(GetFetchSQL<TopOperation>(), clause, "");
-            return new Cache<TopOperation>
-                {
-                    CacheKey = GetCacheKey("TopOperation-" + planHandle.GetHashCode() + "-" + statementStartOffset),
-                    CacheForSeconds = 60,
-                    CacheStaleForSeconds = 5*60,
-                    UpdateCache = UpdateFromSql("Top Operations",
-                                                async conn =>
-                                                (await conn.QueryAsync<TopOperation>(sql, new {planHandle, statementStartOffset, MaxResultCount = 1})).FirstOrDefault())
-                };
+            var sql = string.Format(GetFetchSQL<TopOperation>(), clause, "");
+            return TimedCache(nameof(GetTopOperation) + "-" + planHandle.GetHashCode().ToString() + "-" + statementStartOffset.ToString(),
+                conn => conn.QueryFirstOrDefault<TopOperation>(sql, new { planHandle, statementStartOffset, MaxResultCount = 1 }),
+                60.Seconds(), 60.Seconds());
         }
 
-        public class TopOperation : ISQLVersionedObject
+        public class TopOperation : ISQLVersioned
         {
             public Version MinVersion => SQLServerVersions.SQL2005.RTM;
 
@@ -80,11 +70,8 @@ namespace StackExchange.Opserver.Data.SQL
             public long LastReturnedRows { get; internal set; }
             public string CompiledOnDatabase { get; internal set; }
 
-            public string ReadablePlanHandle
-            {
-                get { return string.Join(string.Empty, PlanHandle.Select(x => x.ToString("X2"))); }
-            }
-            
+            public string ReadablePlanHandle => string.Concat(PlanHandle.Select(x => x.ToString("X2")));
+
             public ShowPlanXML GetShowPlanXML()
             {
                 if (QueryPlan == null) return new ShowPlanXML();
@@ -158,7 +145,7 @@ FROM (SELECT TOP (@MaxResultCount)
              CROSS JOIN(SELECT SUM(execution_count) TotalExecs,
                                SUM(total_elapsed_time) TotalElapsed,
                                SUM(total_worker_time) TotalWorker,
-                               SUM(total_logical_reads) TotalReads
+                               SUM(Cast(total_logical_reads as DECIMAL(38,0))) TotalReads
                           FROM sys.dm_exec_query_stats) AS t
              CROSS APPLY sys.dm_exec_plan_attributes(qs.plan_handle) AS pa
      WHERE pa.attribute = 'dbid'
@@ -183,23 +170,23 @@ FROM (SELECT TOP (@MaxResultCount)
 
         public enum TopSorts
         {
-            [Description("Average CPU")] AvgCPU,
-            [Description("Average CPU per minute")] AvgCPUPerMinute,
-            [Description("Total CPU")] TotalCPU,
-            [Description("Percent of Total CPU")] PercentCPU,
-            [Description("Average Duration")] AvgDuration,
-            [Description("Total Duration")] TotalDuration,
-            [Description("Percent of Total Duration")] PercentDuration,
-            [Description("Average Reads")] AvgReads,
-            [Description("Total Reads")] TotalReads,
-            [Description("Average Rows")] AvgReturnedRows,
-            [Description("Total Rows")] TotalReturnedRows,
-            [Description("Percent of Total Reads")] PercentReads,
-            [Description("Execution Count")] ExecutionCount,
-            [Description("Percent of Total Executions")] PercentExecutions,
-            [Description("Executions per minute")] ExecutionsPerMinute,
-            [Description("Plan Creation Time")] PlanCreationTime,
-            [Description("Last Execution Time")] LastExecutionTime
+            [Description("Average CPU")] AvgCPU = 0,
+            [Description("Average CPU per minute")] AvgCPUPerMinute = 1,
+            [Description("Total CPU")] TotalCPU = 2,
+            [Description("Percent of Total CPU")] PercentCPU = 3,
+            [Description("Average Duration")] AvgDuration = 4,
+            [Description("Total Duration")] TotalDuration = 5,
+            [Description("Percent of Total Duration")] PercentDuration = 6,
+            [Description("Average Reads")] AvgReads = 7,
+            [Description("Total Reads")] TotalReads = 8,
+            [Description("Average Rows")] AvgReturnedRows = 9,
+            [Description("Total Rows")] TotalReturnedRows = 10,
+            [Description("Percent of Total Reads")] PercentReads = 11,
+            [Description("Execution Count")] ExecutionCount = 12,
+            [Description("Percent of Total Executions")] PercentExecutions = 13,
+            [Description("Executions per minute")] ExecutionsPerMinute = 14,
+            [Description("Plan Creation Time")] PlanCreationTime = 15,
+            [Description("Last Execution Time")] LastExecutionTime = 16
         }
 
         public class TopSearchOptions
@@ -225,16 +212,33 @@ FROM (SELECT TOP (@MaxResultCount)
             public int? MaxResultCount { get; set; }
             public int? Database { get; set; }
 
-            public static TopSearchOptions Default => new TopSearchOptions().SetDefaults();
+            public static readonly TopSearchOptions Default = new TopSearchOptions().SetDefaults();
+
+            private const int DefaultMinExecs = 25;
+            private const int DefaultLastRunSeconds = 24*60*60;
+            private const int DefaultMaxResultCount = 100;
 
             public TopSearchOptions SetDefaults()
             {
                 Sort = Sort ?? TopSorts.AvgCPUPerMinute;
-                MinExecs = MinExecs ?? 25;
-                LastRunSeconds = LastRunSeconds ?? 24*60*60;
+                MinExecs = MinExecs ?? DefaultMinExecs;
+                LastRunSeconds = LastRunSeconds ?? DefaultLastRunSeconds;
                 MinLastRunDate = MinLastRunDate ?? DateTime.UtcNow.AddDays(-1);
-                MaxResultCount = MaxResultCount ?? 100;
+                MaxResultCount = MaxResultCount ?? DefaultMaxResultCount;
                 return this;
+            }
+
+            public bool IsNonDefault
+            {
+                get
+                {
+                    if (MinExecs != DefaultMinExecs) return true;
+                    if (LastRunSeconds != DefaultLastRunSeconds) return true;
+                    if (MaxResultCount != DefaultMaxResultCount) return true;
+                    if (Database.HasValue) return true;
+                    if (Search.HasValue()) return true;
+                    return false;
+                }
             }
 
             public string ToSQLWhere()
@@ -245,7 +249,7 @@ FROM (SELECT TOP (@MaxResultCount)
                 if (MinLastRunDate.HasValue) clauses.Add("qs.last_execution_time >= @MinLastRunDate");
                 if (Database.HasValue) clauses.Add("Cast(pa.value as Int) = @Database");
 
-                return clauses.Any() ? "\n       And " + string.Join("\n       And ", clauses) : "";
+                return clauses.Count > 0 ? "\n       And " + string.Join("\n       And ", clauses) : "";
             }
 
             public string ToSQLSearch()
@@ -261,6 +265,21 @@ FROM (SELECT TOP (@MaxResultCount)
             public string ToSQLOrder()
             {
                 return Sort.HasValue ? $"\nORDER BY {Sort} DESC" : "";
+            }
+
+            public override int GetHashCode()
+            {
+                unchecked
+                {
+                    var hashCode = _lastRunSeconds.GetHashCode();
+                    hashCode = (hashCode*397) ^ Sort.GetHashCode();
+                    hashCode = (hashCode*397) ^ MinExecs.GetHashCode();
+                    hashCode = (hashCode*397) ^ MinExecsPerMin.GetHashCode();
+                    hashCode = (hashCode*397) ^ (Search?.GetHashCode() ?? 0);
+                    hashCode = (hashCode*397) ^ MaxResultCount.GetHashCode();
+                    hashCode = (hashCode*397) ^ Database.GetHashCode();
+                    return hashCode;
+                }
             }
         }
     }

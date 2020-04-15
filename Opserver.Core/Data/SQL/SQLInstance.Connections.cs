@@ -7,15 +7,15 @@ namespace StackExchange.Opserver.Data.SQL
     public partial class SQLInstance
     {
         private Cache<List<SQLConnectionSummaryInfo>> _connectionsSummary;
-        public Cache<List<SQLConnectionSummaryInfo>> ConnectionsSummary => _connectionsSummary ?? (_connectionsSummary = SqlCacheList<SQLConnectionSummaryInfo>(60));
+        public Cache<List<SQLConnectionSummaryInfo>> ConnectionsSummary => _connectionsSummary ?? (_connectionsSummary = SqlCacheList<SQLConnectionSummaryInfo>(30.Seconds()));
 
         private Cache<List<SQLConnectionInfo>> _connections;
-        public Cache<List<SQLConnectionInfo>> Connections => _connections ?? (_connections = SqlCacheList<SQLConnectionInfo>(5*60));
+        public Cache<List<SQLConnectionInfo>> Connections => _connections ?? (_connections = SqlCacheList<SQLConnectionInfo>(RefreshInterval));
 
-        public class SQLConnectionSummaryInfo : ISQLVersionedObject
+        public class SQLConnectionSummaryInfo : ISQLVersioned
         {
             public Version MinVersion => SQLServerVersions.SQL2005.SP2;
-            
+
             public string LoginName { get; internal set; }
             public string HostName { get; internal set; }
             public TransactionIsolationLevel TransactionIsolationLevel { get; internal set; }
@@ -24,7 +24,7 @@ namespace StackExchange.Opserver.Data.SQL
             public long TotalReads { get; internal set; }
             public long TotalWrites { get; internal set; }
 
-            internal const string FetchSQL = @"
+            public string GetFetchSQL(Version v) => @"
 Select s.login_name LoginName,
        s.host_name HostName,
        s.transaction_isolation_level TransactionIsolationLevel,
@@ -36,17 +36,12 @@ Select s.login_name LoginName,
        Join sys.dm_exec_sessions s
          On c.most_recent_session_id = s.session_id
  Group By s.login_name, s.host_name, s.transaction_isolation_level";
-
-            public string GetFetchSQL(Version v)
-            {
-                return FetchSQL;
-            }
         }
 
-        public class SQLConnectionInfo : ISQLVersionedObject
+        public class SQLConnectionInfo : ISQLVersioned
         {
             public Version MinVersion => SQLServerVersions.SQL2005.RTM;
-            
+
             public Guid Id { get; internal set; }
             public DateTime ConnectTime { get; internal set; }
             public byte[] PlanHandle { get; internal set; }
@@ -66,11 +61,7 @@ Select s.login_name LoginName,
             public string HostName { get; internal set; }
             public string ProgramName { get; internal set; }
 
-            public string ReadablePlanHandle
-            {
-                get { return string.Join(string.Empty, PlanHandle.Select(x => x.ToString("X2"))); }
-            }
-
+            public string ReadablePlanHandle => string.Concat(PlanHandle.Select(x => x.ToString("X2")));
             internal const string FetchSQL2005SP2Colums = @"
        s.host_process_id HostProcessId,
        s.login_name LoginName,

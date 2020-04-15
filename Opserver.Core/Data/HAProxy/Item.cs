@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Text.RegularExpressions;
+using EnumsNET;
 
 namespace StackExchange.Opserver.Data.HAProxy
 {
@@ -18,6 +19,12 @@ namespace StackExchange.Opserver.Data.HAProxy
         /// </summary>
         [Stat("svname", 1)]
         public string ServerName { get; internal set; }
+
+        // TODO: Settings
+        private static readonly Regex _compactReplacer = new Regex(@"-\d+$", RegexOptions.Compiled);
+        private string _compactServerName;
+        public string CompactServerName =>
+            _compactServerName ?? (_compactServerName = _compactReplacer.Replace(ServerName, ""));
 
         /// <summary>
         /// qcur: current queued requests
@@ -371,11 +378,11 @@ namespace StackExchange.Opserver.Data.HAProxy
                 //Get the stat from the split array
                 var statText = stats[i];
                 //If it's empty, skip it
-                if(string.IsNullOrEmpty(statText)) continue;
+                if (statText.IsNullOrEmpty()) continue;
 
                 //Get the property info for this position
                 var propInfo = StatProperty.AllOrdered[i].PropertyInfo;
-                
+
                 //Get the property type
                 var type = propInfo.PropertyType;
                 //Cast to the underlying type for nullables
@@ -402,7 +409,7 @@ namespace StackExchange.Opserver.Data.HAProxy
                 case StatusType.Socket:
                     return new Socket();
                 default:
-                    throw new NotImplementedException("Unrecognized StatusType " + typeNum);
+                    throw new ArgumentOutOfRangeException("Unrecognized StatusType " + typeNum);
             }
         }
 
@@ -427,6 +434,10 @@ namespace StackExchange.Opserver.Data.HAProxy
 
         public virtual string Description => Type == StatusType.Server ? ServerName : Type.ToString();
 
+        public bool InMaintenance => ProxyServerStatus == ProxyServerStatus.Maintenance;
+        public bool InDrain => ProxyServerStatus == ProxyServerStatus.Drain;
+        public bool OutOfRotation => InMaintenance || InDrain;
+
         public virtual MonitorStatus MonitorStatus
         {
             get
@@ -441,11 +452,9 @@ namespace StackExchange.Opserver.Data.HAProxy
 
                     case ProxyServerStatus.ActiveUpGoingDown:
                     case ProxyServerStatus.BackupUpGoingDown:
-                        return MonitorStatus.Warning;
-
                     case ProxyServerStatus.Maintenance:
                     case ProxyServerStatus.Drain:
-                        return MonitorStatus.Maintenance;
+                        return MonitorStatus.Warning;
 
                     case ProxyServerStatus.Down:
                     case ProxyServerStatus.ActiveDownGoingUp:
@@ -457,7 +466,8 @@ namespace StackExchange.Opserver.Data.HAProxy
                 }
             }
         }
-        public string MonitorStatusReason => MonitorStatus == MonitorStatus.Good ? null : ProxyName + " Status: " + ProxyServerStatus.GetDescription();
+
+        public string MonitorStatusReason => MonitorStatus == MonitorStatus.Good ? null : ProxyName + " Status: " + ProxyServerStatus.AsString(EnumFormat.Description);
 
         public bool IsChecked => Status != "no check";
         public bool IsActive => Active == 1;

@@ -1,22 +1,16 @@
 ﻿namespace StackExchange.Opserver
 {
-    public class PollingSettings : Settings<PollingSettings>
+    public class PollingSettings : ModuleSettings
     {
         public override bool Enabled => Windows != null;
 
         public WindowsPollingSettings Windows { get; set; }
         public class WindowsPollingSettings
         {
-            public WindowsPollingSettings()
-            {
-                // Defaults
-                QueryTimeoutMs = 30*1000;
-            }
-
             /// <summary>
             /// Maximum timeout in milliseconds before giving up on a poll
             /// </summary>
-            public int QueryTimeoutMs { get; set; }
+            public int QueryTimeoutMs { get; set; } = 30 * 1000;
 
             /// <summary>
             /// User to authenticate as, if not present then impersonation will be used

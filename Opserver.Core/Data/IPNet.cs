@@ -1,18 +1,26 @@
 ﻿using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.Serialization;
+using System.Text;
 
 namespace StackExchange.Opserver.Data
 {
     public class IPNet
     {
-        public IPAddress IPAddress { get; private set; }
-        public IPAddress Subnet { get; private set; }
-        public int CIDR { get; private set; }
+        public IPAddress IPAddress { get; }
+        public IPAddress Subnet { get; }
+        public int CIDR { get; }
         public AddressFamily AddressFamily => IPAddress.AddressFamily;
+
+        public string AddressFamilyDescription =>
+            IPAddress.AddressFamily == AddressFamily.InterNetwork
+                ? "IPv4"
+                : IPAddress.AddressFamily == AddressFamily.InterNetworkV6
+                    ? "IPv6"
+                    : "";
 
         private TinyIPAddress? _tinyIPAddress { get; set; }
         private TinyIPAddress? _tinySubnet { get; set; }
@@ -27,17 +35,13 @@ namespace StackExchange.Opserver.Data
         public IPAddress LastAddressInSubnet => TinyLastAddressInSubnet.ToIPAddress();
         public IPAddress Broadcast => AddressFamily == AddressFamily.InterNetwork ? TinyBroadcast.ToIPAddress() : null;
 
-
-        private TinyIPAddress TinyFirstAddressInSubnet => (TIPAddress & TSubnet);
+        private TinyIPAddress TinyFirstAddressInSubnet => TIPAddress & TSubnet;
         private TinyIPAddress TinyLastAddressInSubnet => Subnet == null ? TIPAddress : (TIPAddress | ~TSubnet);
         private TinyIPAddress TinyBroadcast => Subnet == null ? TIPAddress : (TIPAddress | ~TSubnet);
 
         public bool IsPrivate => IsPrivateNetwork(this);
 
-        public override string ToString()
-        {
-            return string.Concat(IPAddress, "/", CIDR);
-        }
+        public override string ToString() => IPAddress + "/" + CIDR.ToString();
 
         public bool Contains(IPAddress ip)
         {
@@ -46,26 +50,17 @@ namespace StackExchange.Opserver.Data
             return tip.HasValue && Contains(tip.Value);
         }
 
-        public bool Contains(IPNet network)
-        {
-            return network != null
-                && AddressFamily == network.AddressFamily
-                && TinyFirstAddressInSubnet <= network.TinyFirstAddressInSubnet
-                && network.TinyLastAddressInSubnet <= TinyLastAddressInSubnet;
-            //return (TSubnet & TIPAddress) == (TSubnet & network.TIPAddress & TIPAddress );
-        }
+        public bool Contains(IPNet network) =>
+            network != null
+            && AddressFamily == network.AddressFamily
+            && TinyFirstAddressInSubnet <= network.TinyFirstAddressInSubnet
+            && network.TinyLastAddressInSubnet <= TinyLastAddressInSubnet;
 
-        private bool Contains(TinyIPAddress tip)
-        {
-            return 
-                AddressFamily == tip.AddressFamily
-                && (TSubnet & TIPAddress) == (TSubnet & tip);
-        }
+        private bool Contains(TinyIPAddress tip) =>
+            AddressFamily == tip.AddressFamily && (TSubnet & TIPAddress) == (TSubnet & tip);
 
-        public bool IsPrivateNetwork(IPNet network)
-        {
-            return ReservedPrivateRanges.Any(r => r.Contains(network));
-        }
+        public bool IsPrivateNetwork(IPNet network) =>
+            ReservedPrivateRanges.Any(r => r.Contains(network));
 
         public IPNet(IPAddress ip, IPAddress subnet, int? cidr = null)
         {
@@ -76,28 +71,24 @@ namespace StackExchange.Opserver.Data
             CIDR = cidr ?? (subnet == null ? GetBitLength(ip.AddressFamily) : TSubnet.NumberOfSetBits);
         }
 
-        // Prevent allocating an array for every address we split
-        private static readonly char[] _cidrSplit = new[] { '/' };
-
         public static bool TryParse(string ipOrCidr, out IPNet net)
         {
             try { net = Parse(ipOrCidr); return true; }
             catch { net = null; return false; }
         }
+
         public static IPNet Parse(string ipOrCidr)
         {
-            var parts = ipOrCidr.Split(_cidrSplit);
+            var parts = ipOrCidr.Split(StringSplits.ForwardSlash);
             if (parts.Length == 2)
             {
-                int cidr;
-                if (int.TryParse(parts[1], out cidr))
+                if (int.TryParse(parts[1], out int cidr))
                 {
                     return Parse(parts[0], cidr);
                 }
                 throw new IPNetParseException("Error parsing CIDR from IP: '{0}'", parts[1]);
             }
-            IPAddress ip;
-            if (IPAddress.TryParse(parts[0], out ip))
+            if (IPAddress.TryParse(parts[0], out IPAddress ip))
             {
                 return new IPNet(ip, null);
             }
@@ -109,10 +100,10 @@ namespace StackExchange.Opserver.Data
             try { net = Parse(ip, cidr); return true; }
             catch { net = null; return false; }
         }
+
         public static IPNet Parse(string ip, int cidr)
         {
-            IPAddress ipAddr;
-            if (IPAddress.TryParse(ip, out ipAddr))
+            if (IPAddress.TryParse(ip, out IPAddress ipAddr))
             {
                 var bits = GetBitLength(ipAddr.AddressFamily);
                 var subnet = IPAddressFromCIDR(bits, cidr);
@@ -126,26 +117,24 @@ namespace StackExchange.Opserver.Data
             try { net = Parse(ip, subnet); return true; }
             catch { net = null; return false; }
         }
+
         public static IPNet Parse(string ip, string subnet)
         {
-            IPAddress ipAddr, subnetAddr;
-            if (IPAddress.TryParse(ip, out ipAddr))
+            if (IPAddress.TryParse(ip, out IPAddress ipAddr))
             {
-                if (IPAddress.TryParse(subnet, out subnetAddr))
+                if (IPAddress.TryParse(subnet, out IPAddress subnetAddr))
                 {
                     if (!TinyIPAddress.FromIPAddress(subnetAddr).Value.IsValidSubnet)
-                        throw new IPNetParseException("Error parsing subnet mask Address from IP: '{0}' is not a valid subnet", subnet);
+                        throw new IPNetParseException("Error parsing subnet mask Address from IP: '" + subnet + "' is not a valid subnet");
                     return new IPNet(ipAddr, subnetAddr);
                 }
-                throw new IPNetParseException("Error parsing subnet mask from IP: '{0}'", subnet);
+                throw new IPNetParseException("Error parsing subnet mask from IP: '" + subnet + "'");
             }
-            throw new IPNetParseException("Error parsing IP Address from IP: '{0}'", ip);
+            throw new IPNetParseException("Error parsing IP Address from IP: '" + ip + "'");
         }
 
-        public static IPAddress ToNetmask(AddressFamily addressFamily, int cidr)
-        {
-            return IPAddressFromCIDR(GetBitLength(addressFamily), cidr);
-        }
+        public static IPAddress ToNetmask(AddressFamily addressFamily, int cidr) =>
+            IPAddressFromCIDR(GetBitLength(addressFamily), cidr);
 
         private static int GetBitLength(AddressFamily family)
         {
@@ -157,7 +146,7 @@ namespace StackExchange.Opserver.Data
             }
         }
 
-        /// This is a much faster version thanks to Marc Gravell
+        // This is a much faster version thanks to Marc Gravell
         private static IPAddress IPAddressFromCIDR(int bitLength, int cidr)
         {
             var ipByteArray = new byte[bitLength / 8];
@@ -175,9 +164,9 @@ namespace StackExchange.Opserver.Data
 
         /// <summary>
         /// Private IP Ranges reserved for internal use by ARIN
-        /// These are not routable on the global internet
+        /// These networks should not route on the global Internet
         /// </summary>
-        private static List<IPNet> ReservedPrivateRanges = new List<IPNet>
+        private static readonly List<IPNet> ReservedPrivateRanges = new List<IPNet>
             {
                 Parse("10.0.0.0/8"),
                 Parse("172.16.0.0/12"),
@@ -190,10 +179,14 @@ namespace StackExchange.Opserver.Data
             public IPNetParseException(string msg, params object[] format) : base(string.Format(msg, format)) { }
         }
 
+        [DataContract]
         public struct TinyIPAddress : IEquatable<TinyIPAddress>, IComparable<TinyIPAddress>
         {
+            [DataMember(Order = 1)]
             private readonly uint? IPv4Address;
+            [DataMember(Order = 2)]
             private readonly ulong? FirstV6Leg;
+            [DataMember(Order = 3)]
             private readonly ulong? LastV6Leg;
 
             public AddressFamily AddressFamily => IPv4Address.HasValue ? AddressFamily.InterNetwork : AddressFamily.InterNetworkV6;
@@ -202,42 +195,28 @@ namespace StackExchange.Opserver.Data
             {
                 get
                 {
+                    StringBuilder sb;
                     if (IPv4Address.HasValue)
                     {
-                        var ba = new BitArray(new[] {
-						(byte)(IPv4Address.Value >> 24),
-						(byte)(IPv4Address.Value >> 16),
-						(byte)(IPv4Address.Value >> 8),
-						(byte)(IPv4Address.Value)
-					});
-                        var bits = new bool[32];
-                        ba.CopyTo(bits, 0);
-                        return string.Concat(bits.Select(b => b ? "1" : "0"));
+                        sb = StringBuilderCache.Get(32);
+                        for (var i = 0; i < 32; i++)
+                        {
+                            sb.Append((IPv4Address.Value >> (31 - i)) & 1);
+                        }
                     }
                     else
                     {
-                        var ba = new BitArray(new[] {
-						(byte)(FirstV6Leg.Value >> 56),
-						(byte)(FirstV6Leg.Value >> 48),
-						(byte)(FirstV6Leg.Value >> 40),
-						(byte)(FirstV6Leg.Value >> 32),
-						(byte)(FirstV6Leg.Value >> 24),
-						(byte)(FirstV6Leg.Value >> 16),
-						(byte)(FirstV6Leg.Value >> 8),
-						(byte)(FirstV6Leg.Value),
-						(byte)(LastV6Leg.Value >> 56),
-						(byte)(LastV6Leg.Value >> 48),
-						(byte)(LastV6Leg.Value >> 40),
-						(byte)(LastV6Leg.Value >> 32),
-						(byte)(LastV6Leg.Value >> 24),
-						(byte)(LastV6Leg.Value >> 16),
-						(byte)(LastV6Leg.Value >> 8),
-						(byte)(LastV6Leg.Value)
-					});
-                        var bits = new bool[128];
-                        ba.CopyTo(bits, 0);
-                        return string.Concat(bits.Select(b => b ? "1" : "0"));
+                        sb = StringBuilderCache.Get(128);
+                        for (var i = 0; i < 64; i++)
+                        {
+                            sb.Append((FirstV6Leg.Value >> (63 - i)) & 1);
+                        }
+                        for (var i = 0; i < 64; i++)
+                        {
+                            sb.Append((LastV6Leg.Value >> (63 - i)) & 1);
+                        }
                     }
+                    return sb.ToStringRecycle();
                 }
             }
 
@@ -330,23 +309,25 @@ namespace StackExchange.Opserver.Data
             }
 
             ///<summary>
-            /// Gets the number of bits set in a uint, taken from 
-            /// http://stackoverflow.com/questions/109023/how-to-count-the-number-of-set-bits-in-a-32-bit-integer
+            /// Gets the number of bits set in a <see cref="uint"/>, taken from 
+            /// https://stackoverflow.com/questions/109023/how-to-count-the-number-of-set-bits-in-a-32-bit-integer
             /// </summary>
+            /// <param name="i">The value to check</param>
             private static int NumberOfSetBitsImpl(uint i)
             {
-                i = i - ((i >> 1) & 0x55555555U);
+                i -= (i >> 1) & 0x55555555U;
                 i = (i & 0x33333333U) + ((i >> 2) & 0x33333333U);
                 return (int)((((i + (i >> 4)) & 0x0F0F0F0FU) * 0x01010101U) >> 24);
             }
 
             ///<summary>
-            /// Gets the number of bits set in a ulong, taken from 
-            /// http://stackoverflow.com/questions/2709430/count-number-of-bits-in-a-64-bit-long-big-integer
+            /// Gets the number of bits set in a <see cref="ulong"/>, taken from 
+            /// https://stackoverflow.com/questions/2709430/count-number-of-bits-in-a-64-bit-long-big-integer
             /// </summary>
+            /// <param name="i">The value to check</param>
             private static int NumberOfSetBitsImpl(ulong i)
             {
-                i = i - ((i >> 1) & 0x5555555555555555UL);
+                i -= (i >> 1) & 0x5555555555555555UL;
                 i = (i & 0x3333333333333333UL) + ((i >> 2) & 0x3333333333333333UL);
                 return (int)(unchecked(((i + (i >> 4)) & 0xF0F0F0F0F0F0F0FUL) * 0x101010101010101UL) >> 56);
             }
@@ -357,8 +338,10 @@ namespace StackExchange.Opserver.Data
                 {
                     if (IPv4Address.HasValue) return IsValidSubnetImpl(IPv4Address.Value);
                     if (FirstV6Leg.HasValue && LastV6Leg.HasValue)
+                    {
                         return (FirstV6Leg == ulong.MaxValue && IsValidSubnetImpl(LastV6Leg.Value))
-                            || (LastV6Leg == ulong.MinValue && IsValidSubnetImpl(FirstV6Leg.Value));
+                           || (LastV6Leg == ulong.MinValue && IsValidSubnetImpl(FirstV6Leg.Value));
+                    }
                     return false;
                 }
             }
@@ -385,49 +368,36 @@ namespace StackExchange.Opserver.Data
                 return true;
             }
 
-            public static TinyIPAddress operator &(TinyIPAddress a, TinyIPAddress b)
-            {
-                return a.IPv4Address.HasValue && b.IPv4Address.HasValue
-                           ? new TinyIPAddress(a.IPv4Address & b.IPv4Address)
-                           : new TinyIPAddress(a.FirstV6Leg & b.FirstV6Leg, a.LastV6Leg & b.LastV6Leg);
-            }
-            public static TinyIPAddress operator |(TinyIPAddress a, TinyIPAddress b)
-            {
-                return a.IPv4Address.HasValue && b.IPv4Address.HasValue
-                           ? new TinyIPAddress(a.IPv4Address | b.IPv4Address)
-                           : new TinyIPAddress(a.FirstV6Leg | b.FirstV6Leg, a.LastV6Leg | b.LastV6Leg);
-            }
-            public static TinyIPAddress operator +(TinyIPAddress a, TinyIPAddress b)
-            {
-                return a.IPv4Address.HasValue && b.IPv4Address.HasValue
-                           ? new TinyIPAddress(a.IPv4Address + b.IPv4Address)
-                           : new TinyIPAddress(a.FirstV6Leg + b.FirstV6Leg, a.LastV6Leg + b.LastV6Leg);
-            }
-            public static TinyIPAddress operator ~(TinyIPAddress a)
-            {
-                return a.IPv4Address.HasValue
-                           ? new TinyIPAddress(~a.IPv4Address)
-                           : new TinyIPAddress(~a.FirstV6Leg, ~a.LastV6Leg);
-            }
+            public static TinyIPAddress operator &(TinyIPAddress a, TinyIPAddress b) =>
+                a.IPv4Address.HasValue && b.IPv4Address.HasValue
+                    ? new TinyIPAddress(a.IPv4Address & b.IPv4Address)
+                    : new TinyIPAddress(a.FirstV6Leg & b.FirstV6Leg, a.LastV6Leg & b.LastV6Leg);
 
-            public static bool operator ==(TinyIPAddress a, TinyIPAddress b)
-            {
-                return (a.IPv4Address.HasValue && b.IPv4Address.HasValue && a.IPv4Address == b.IPv4Address)
-                    || (a.FirstV6Leg.HasValue && b.FirstV6Leg.HasValue && a.FirstV6Leg == b.FirstV6Leg && a.LastV6Leg == b.LastV6Leg);
-            }
-            public static bool operator !=(TinyIPAddress a, TinyIPAddress b)
-            {
-                return (a.IPv4Address.HasValue && b.IPv4Address.HasValue && a.IPv4Address != b.IPv4Address)
-                    || (a.FirstV6Leg.HasValue && b.FirstV6Leg.HasValue && (a.FirstV6Leg != b.FirstV6Leg || a.LastV6Leg != b.LastV6Leg));
-            }
-            public static bool operator <=(TinyIPAddress a, TinyIPAddress b)
-            {
-                return Compare(a, b) <= 0;
-            }
-            public static bool operator >=(TinyIPAddress a, TinyIPAddress b)
-            {
-                return Compare(a, b) >= 0;
-            }
+            public static TinyIPAddress operator |(TinyIPAddress a, TinyIPAddress b) =>
+                a.IPv4Address.HasValue && b.IPv4Address.HasValue
+                    ? new TinyIPAddress(a.IPv4Address | b.IPv4Address)
+                    : new TinyIPAddress(a.FirstV6Leg | b.FirstV6Leg, a.LastV6Leg | b.LastV6Leg);
+
+            public static TinyIPAddress operator +(TinyIPAddress a, TinyIPAddress b) =>
+                a.IPv4Address.HasValue && b.IPv4Address.HasValue
+                    ? new TinyIPAddress(a.IPv4Address + b.IPv4Address)
+                    : new TinyIPAddress(a.FirstV6Leg + b.FirstV6Leg, a.LastV6Leg + b.LastV6Leg);
+
+            public static TinyIPAddress operator ~(TinyIPAddress a) =>
+                a.IPv4Address.HasValue
+                    ? new TinyIPAddress(~a.IPv4Address)
+                    : new TinyIPAddress(~a.FirstV6Leg, ~a.LastV6Leg);
+
+            public static bool operator ==(TinyIPAddress a, TinyIPAddress b) =>
+                (a.IPv4Address.HasValue && b.IPv4Address.HasValue && a.IPv4Address == b.IPv4Address)
+                || (a.FirstV6Leg.HasValue && b.FirstV6Leg.HasValue && a.FirstV6Leg == b.FirstV6Leg && a.LastV6Leg == b.LastV6Leg);
+
+            public static bool operator !=(TinyIPAddress a, TinyIPAddress b) =>
+                (a.IPv4Address.HasValue && b.IPv4Address.HasValue && a.IPv4Address != b.IPv4Address)
+                || (a.FirstV6Leg.HasValue && b.FirstV6Leg.HasValue && (a.FirstV6Leg != b.FirstV6Leg || a.LastV6Leg != b.LastV6Leg));
+
+            public static bool operator <=(TinyIPAddress a, TinyIPAddress b) => Compare(a, b) <= 0;
+            public static bool operator >=(TinyIPAddress a, TinyIPAddress b) => Compare(a, b) >= 0;
 
             public override int GetHashCode()
             {
@@ -438,21 +408,18 @@ namespace StackExchange.Opserver.Data
                 return hash;
             }
 
-            public bool Equals(TinyIPAddress other)
+            public bool Equals(TinyIPAddress other) =>
+                IPv4Address == other.IPv4Address
+                && FirstV6Leg == other.FirstV6Leg
+                && LastV6Leg == other.LastV6Leg;
+
+            public override bool Equals(object obj)
             {
-                return IPv4Address == other.IPv4Address && FirstV6Leg == other.FirstV6Leg && LastV6Leg == other.LastV6Leg;
+                if (obj is null) return false;
+                return obj is TinyIPAddress && Equals((TinyIPAddress)obj);
             }
 
-            public override bool Equals(object other)
-            {
-                if (ReferenceEquals(null, other)) return false;
-                return other is TinyIPAddress && Equals((TinyIPAddress)other);
-            }
-
-            public int CompareTo(TinyIPAddress other)
-            {
-                return Compare(this, other);
-            }
+            public int CompareTo(TinyIPAddress other) => Compare(this, other);
 
             private static int Compare(TinyIPAddress a, TinyIPAddress b)
             {

@@ -2,8 +2,10 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Specialized;
+using System.Globalization;
 using System.Linq;
 using System.Net;
+using System.Runtime.Serialization;
 using System.Text;
 using System.Threading.Tasks;
 using Jil;
@@ -53,9 +55,8 @@ namespace StackExchange.Opserver.Data.Jira
             _jiraSettings = jiraSettings;
         }
 
-        public async Task<JiraCreateIssueResponse> CreateIssue(JiraAction action, Error error, string accountName)
+        public async Task<JiraCreateIssueResponse> CreateIssueAsync(JiraAction action, Error error, string accountName)
         {
-
             var url = GetUrl(action);
             var userName = GetUsername(action);
             var password = GetPassword(action);
@@ -69,21 +70,21 @@ namespace StackExchange.Opserver.Data.Jira
 
             var fields = new Dictionary<string, object>
             {
-                {"project", new {key = projectKey}},
-                {"issuetype", new {name = action.Name}},
-                {"summary", error.Message.CleanCRLF().TruncateWithEllipsis(255)},
-                {"description", RenderDescription(error, accountName)}
+                ["project"] = new { key = projectKey },
+                ["issuetype"] = new { name = action.Name },
+                ["summary"] = error.Message.CleanCRLF().TruncateWithEllipsis(255),
+                ["description"] = RenderDescription(error, accountName)
             };
             var components = action.GetComponentsForApplication(error.ApplicationName);
 
-            if (components != null && components.Count > 0)
+            if (components?.Count > 0)
                 fields.Add("components", components);
 
             var labels = action.Labels.IsNullOrEmpty()
                 ? null
                 : action.Labels.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
 
-            if (labels != null && labels.Length > 0)
+            if (labels?.Length > 0)
                 fields.Add("labels", labels);
 
             var payload = new { fields };
@@ -98,14 +99,14 @@ namespace StackExchange.Opserver.Data.Jira
 
             if (commentBody.HasValue())
             {
-                await Comment(action, result, commentBody).ConfigureAwait(false);
+                await CommentAsync(action, result, commentBody).ConfigureAwait(false);
             }
-            
+
             result.Host = GetHost(action);
             return result;
         }
 
-        public async Task<string> Comment(JiraAction actions, JiraCreateIssueResponse createResponse, string comment)
+        public async Task<string> CommentAsync(JiraAction actions, JiraCreateIssueResponse createResponse, string comment)
         {
             var url = GetUrl(actions);
             var userName = GetUsername(actions);
@@ -127,7 +128,6 @@ namespace StackExchange.Opserver.Data.Jira
             var response = await client.PostAsync<string, object>(resource, payload).ConfigureAwait(false);
             return response;
         }
-
 
         private string GetPassword(JiraAction action)
         {
@@ -160,11 +160,11 @@ namespace StackExchange.Opserver.Data.Jira
             {
                 return string.Empty;
             }
-            Func<string, bool> isHidden = k => DefaultHttpKeys.Contains(k);
+            bool isHidden(string k) => DefaultHttpKeys.Contains(k);
             var allKeys = vars.AllKeys.Where(key => !HiddenHttpKeys.Contains(key) && vars[key].HasValue()).OrderBy(k => k);
 
-            var sb = new StringBuilder();
-            sb.AppendLine("h3." + title);
+            var sb = StringBuilderCache.Get();
+            sb.Append("h3.").AppendLine(title);
             sb.AppendLine("{noformat}");
             foreach (var k in allKeys.Where(k => !isHidden(k)))
             {
@@ -179,47 +179,49 @@ namespace StackExchange.Opserver.Data.Jira
             }
 
             sb.AppendLine("{noformat}");
-            return sb.ToString();
+            return sb.ToStringRecycle();
         }
 
         private string RenderDescription(Error error, string accountName)
         {
-            var sb = new StringBuilder();
+            var sb = StringBuilderCache.Get();
             sb.AppendLine("{noformat}");
             if (accountName.HasValue())
             {
                 sb.AppendFormat("Reporter Account Name: {0}\r\n", accountName);
             }
-            sb.AppendFormat("Error Guid: {0}\r\n", error.GUID);
+            sb.AppendFormat("Error Guid: {0}\r\n", error.GUID.ToString());
             sb.AppendFormat("App. Name: {0}\r\n", error.ApplicationName);
             sb.AppendFormat("Machine Name: {0}\r\n", error.MachineName);
             sb.AppendFormat("Host: {0}\r\n", error.Host);
-            sb.AppendFormat("Created On (UTC): {0}\r\n", error.CreationDate);
-            sb.AppendFormat("Url: {0}\r\n", error.Url);
+            sb.AppendFormat("Created On (UTC): {0}\r\n", error.CreationDate.ToString(CultureInfo.CurrentCulture));
+            sb.AppendFormat("Url: {0}\r\n", error.FullUrl);
             sb.AppendFormat("HTTP Method: {0}\r\n", error.HTTPMethod);
             sb.AppendFormat("IP Address: {0}\r\n", error.IPAddress);
-            sb.AppendFormat("Count: {0}\r\n", error.DuplicateCount);
+            sb.AppendFormat("Count: {0}\r\n", error.DuplicateCount.ToString());
 
             sb.AppendLine("{noformat}");
             sb.AppendLine("{noformat}");
             sb.AppendLine(error.Detail);
             sb.AppendLine("{noformat}");
 
-            return sb.ToString();
+            return sb.ToStringRecycle();
         }
 
         public class JiraCreateIssueResponse
         {
+            [DataMember(Name = "id")]
+            public string Id { get; set; }
+            [DataMember(Name = "key")]
             public string Key { get; set; }
-            public int Id { get; set; }
-
+            [DataMember(Name = "self")]
             public string Self { get; set; }
 
             public string Host { get; set; }
 
             public string BrowseUrl => Host.IsNullOrEmpty() || Key.IsNullOrEmpty()
                 ? string.Empty
-                : $"{Host.TrimEnd('/')}/browse/{Key}";
+                : $"{Host.TrimEnd(StringSplits.ForwardSlash)}/browse/{Key}";
         }
     }
 
@@ -236,7 +238,7 @@ namespace StackExchange.Opserver.Data.Jira
             if (baseUrl.IsNullOrEmpty())
                 throw new TypeInitializationException("StackExchange.Opserver.Data.Jira.JsonService", new ApplicationException("BaseUrl is required"));
 
-            BaseUrl = baseUrl.Trim().TrimEnd("/") + "/";
+            BaseUrl = baseUrl.Trim().TrimEnd(StringSplits.ForwardSlash) + "/";
         }
 
         private Uri GetUriForResource(string resource)
@@ -247,16 +249,16 @@ namespace StackExchange.Opserver.Data.Jira
             if (string.IsNullOrWhiteSpace(resource))
                 return new Uri(BaseUrl);
 
-            return new Uri(BaseUrl + resource.Trim().TrimStart('/'));
+            return new Uri(BaseUrl + resource.Trim().TrimStart(StringSplits.ForwardSlash));
         }
 
         private string GetBasicAuthzValue()
         {
             if (Username.IsNullOrEmpty())
                 return string.Empty;
-            
+
             var enc = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{Username}:{Password}"));
-            return $"{"Basic"} {enc}";
+            return $"Basic {enc}";
         }
 
         public async Task<TResponse> GetAsync<TResponse>(string resource)
@@ -284,19 +286,11 @@ namespace StackExchange.Opserver.Data.Jira
             if (authz.HasValue())
                 client.Headers.Add(HttpRequestHeader.Authorization, authz);
 
-
             var json = JSON.Serialize(data);
             byte[] dataBytes = Encoding.UTF8.GetBytes(json);
             var uri = GetUriForResource(resource);
             var responseBytes = new byte[0];
-            try
-            {
-                responseBytes = await client.UploadDataTaskAsync(uri, "POST", dataBytes).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                throw ex;
-            }
+            await client.UploadDataTaskAsync(uri, "POST", dataBytes).ConfigureAwait(false);
 
             string response = Encoding.UTF8.GetString(responseBytes);
             if (typeof(TResponse) == typeof(string))

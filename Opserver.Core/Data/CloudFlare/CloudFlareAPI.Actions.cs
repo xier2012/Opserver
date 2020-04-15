@@ -20,11 +20,11 @@ namespace StackExchange.Opserver.Data.CloudFlare
         }
     }
 
-    public static partial class ZoneExtensions
+    public static class ZoneExtensions
     {
         private static readonly NameValueCollection _purgeAllParams = new NameValueCollection
         {
-            {"purge_everything", "true"}
+            ["purge_everything"] = "true"
         };
 
         public static bool PurgeAllFiles(this CloudFlareZone zone)
@@ -32,9 +32,10 @@ namespace StackExchange.Opserver.Data.CloudFlare
             var result = CloudFlareAPI.Instance.Post<CloudFlareResult>($"zones/{zone.Id}/purge_cache", _purgeAllParams);
             return result.Success;
         }
+
         public static bool PurgeFiles(this CloudFlareZone zone, IEnumerable<string> files)
         {
-            var nvc = new NameValueCollection {{"files", JSON.Serialize(files)}};
+            var nvc = new NameValueCollection { ["files"] = JSON.Serialize(files) };
 
             var result = CloudFlareAPI.Instance.Delete<CloudFlareResult>($"zones/{zone.Id}/purge_cache", nvc);
             return result.Success;

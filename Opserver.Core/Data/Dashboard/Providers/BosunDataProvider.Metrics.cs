@@ -1,10 +1,12 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Jil;
+using System.Runtime.Serialization;
 
 namespace StackExchange.Opserver.Data.Dashboard.Providers
 {
@@ -12,22 +14,23 @@ namespace StackExchange.Opserver.Data.Dashboard.Providers
     {
         public class TSDBQuery
         {
-            // ReSharper disable InconsistentNaming
-            public string start { get; set; }
-            public string end { get; set; }
-            public List<object> queries { get; set; }
-            // ReSharper restore InconsistentNaming
+            [DataMember(Name = "start")]
+            public string Start { get; set; }
+            [DataMember(Name = "end")]
+            public string End { get; set; }
+            [DataMember(Name = "queries")]
+            public List<object> Queries { get; set; }
 
             public TSDBQuery(DateTime? startTime, DateTime? endTime = null)
             {
-                start = ConvertTime(startTime, DateTime.UtcNow.AddYears(-1));
-                if (endTime.HasValue) end = ConvertTime(endTime, DateTime.UtcNow);
-                queries = new List<object>();
+                Start = ConvertTime(startTime, DateTime.UtcNow.AddYears(-1));
+                if (endTime.HasValue) End = ConvertTime(endTime, DateTime.UtcNow);
+                Queries = new List<object>();
             }
 
             public static string ConvertTime(DateTime? date, DateTime valueIfNull)
             {
-                return (date ?? valueIfNull).ToString("yyyy/MM/dd-HH:mm:ss");
+                return (date ?? valueIfNull).ToString("yyyy/MM/dd-HH:mm:ss", CultureInfo.InvariantCulture);
             }
 
             public void AddQuery(string metric, string host = "*", bool counter = true, IDictionary<string, string> tags = null)
@@ -51,24 +54,24 @@ namespace StackExchange.Opserver.Data.Dashboard.Providers
                 {
                     foreach (var p in tags) query.tags[p.Key] = p.Value;
                 }
-                queries.Add(query);
+                Queries.Add(query);
             }
         }
 
-        public async Task<BosunMetricResponse> RunTSDBQuery(TSDBQuery query, int? pointCount = null)
+        public async Task<BosunMetricResponse> RunTSDBQueryAsync(TSDBQuery query, int? pointCount = null)
         {
             var json = JSON.SerializeDynamic(query, Options.ExcludeNullsUtc);
-            var url = GetUrl($"api/graph?json={json}{(pointCount.HasValue ? "&autods=" + pointCount : "")}");
-            var apiResult = await GetFromBosun<BosunMetricResponse>(url);
+            var url = GetUrl($"api/graph?json={json}{(pointCount.HasValue ? "&autods=" + pointCount.ToString() : "")}");
+            var apiResult = await GetFromBosunAsync<BosunMetricResponse>(url).ConfigureAwait(false);
             return apiResult.Result;
         }
 
         public Task<BosunMetricResponse> GetMetric(string metricName, DateTime start, DateTime? end = null, string host = "*", IDictionary<string, string> tags = null)
         {
-            metricName = BosunMetric.GetDenormalized(metricName, host);
+            metricName = BosunMetric.GetDenormalized(metricName, host, NodeMetricCache.Data);
             var query = new TSDBQuery(start, end);
-            query.AddQuery(metricName, host, BosunMetric.IsCounter(metricName), tags);
-            return RunTSDBQuery(query, 1000);
+            query.AddQuery(metricName, host, BosunMetric.IsCounter(metricName, host), tags);
+            return RunTSDBQueryAsync(query, 500);
         }
 
         private Cache<IntervalCache> _dayCache;
@@ -79,10 +82,10 @@ namespace StackExchange.Opserver.Data.Dashboard.Providers
                 return _dayCache ?? (_dayCache = ProviderCache(async () =>
                 {
                     var result = new IntervalCache(TimeSpan.FromDays(1));
-                    Func<string, string[], Task> addMetric = async (metricName, tags) =>
+                    async Task addMetric(string metricName, string[] tags)
                     {
                         var tagDict = tags?.ToDictionary(t => t, t => "*");
-                        var apiResult = await GetMetric(metricName, result.StartTime, tags: tagDict);
+                        var apiResult = await GetMetric(metricName, result.StartTime, tags: tagDict).ConfigureAwait(false);
                         if (apiResult == null) return;
                         if (tags?.Any() ?? false)
                         {
@@ -91,19 +94,21 @@ namespace StackExchange.Opserver.Data.Dashboard.Providers
                                 .ToDictionary(s => s.Key.NormalizeForCache(), s => s.ToList());
                         }
                         else
+                        {
                             result.Series[metricName] = apiResult.Series.ToDictionary(s => s.Host.NormalizeForCache());
-                    };
-                    
+                        }
+                    }
+
                     var c = addMetric(BosunMetric.Globals.CPU, null);
                     var m = addMetric(BosunMetric.Globals.MemoryUsed, null);
                     var n = addMetric(BosunMetric.Globals.NetBytes, new[] {BosunMetric.Tags.Direction});
-                    await Task.WhenAll(c, m, n); // parallel baby!
+                    await Task.WhenAll(c, m, n).ConfigureAwait(false); // parallel baby!
 
                     return result;
-                }, 60, 3600));
+                }, 60.Seconds(), 60.Minutes()));
             }
         }
-        
+
         public class IntervalCache
         {
             public TimeSpan TimeSpan { get; set; }
@@ -125,7 +130,7 @@ namespace StackExchange.Opserver.Data.Dashboard.Providers
             }
         }
     }
-    
+
     public class BosunMetric
     {
         public BosunMetricType? Type { get; set; }
@@ -146,8 +151,7 @@ namespace StackExchange.Opserver.Data.Dashboard.Providers
 
         private static class Suffixes
         {
-            public const string CPU = ".os.cpu";
-            public const string MemoryUsed = ".os.mem.used";
+            public const string CPU = "." + Globals.CPU;
         }
 
         public static class Tags
@@ -167,27 +171,36 @@ namespace StackExchange.Opserver.Data.Dashboard.Providers
         public static class TagCombos
         {
             public static readonly Dictionary<string, string>
-                AllNetDirections = new Dictionary<string, string> {{Tags.Direction, "*"}},
-                AllDisks = new Dictionary<string, string> {{Tags.Disk, "*"}};
+                AllNetDirections = new Dictionary<string, string> {[Tags.Direction] = "*" },
+                AllDisks = new Dictionary<string, string> {[Tags.Disk] = "*" };
 
             public static Dictionary<string, string> AllDirectionsForInterface(string ifaceId)
-                => new Dictionary<string, string> {{Tags.Direction, "*"}, {Tags.IFace, ifaceId}};
+                => new Dictionary<string, string>
+                {
+                    [Tags.Direction] = "*",
+                    [Tags.IFace] = ifaceId
+                };
         }
 
-        public static bool IsCounter(string metric)
+        public static bool IsCounter(string metric, string host)
         {
             if (metric.IsNullOrEmpty()) return false;
+            if (metric.StartsWith("__"))
+            {
+                metric = metric.Replace($"__{host}.", "");
+            }
             switch (metric)
             {
                 case Globals.CPU:
                 case Globals.NetBytes:
                 case Globals.NetBondBytes:
+                case Globals.NetOtherBytes:
+                case Globals.NetTunnelBytes:
+                case Globals.NetVirtualBytes:
                     return true;
+                default:
+                    return false;
             }
-            if (metric.EndsWith(Suffixes.CPU))
-                return true;
-
-            return false;
         }
 
         public static string InterfaceMetricName(Interface i)
@@ -207,17 +220,28 @@ namespace StackExchange.Opserver.Data.Dashboard.Providers
             }
         }
 
-        public static string GetDenormalized(string metric, string host)
+        public static string GetDenormalized(string metric, string host, Dictionary<string, List<string>> metricCache)
         {
-            if (host != null && !host.Contains("*") && !host.Contains("|"))
+            if (host == null || host.Contains("*") || host.Contains("|"))
             {
-                switch (metric)
-                {
-                    case Globals.CPU:
-                        return $"__{host}{Suffixes.CPU}";
-                    case Globals.MemoryUsed:
-                        return $"__{host}{Suffixes.MemoryUsed}";
-                }
+                return metric;
+            }
+
+            switch (metric)
+            {
+                case Globals.CPU:
+                case Globals.MemoryUsed:
+                case Globals.NetBondBytes:
+                case Globals.NetOtherBytes:
+                case Globals.NetTunnelBytes:
+                case Globals.NetVirtualBytes:
+                case Globals.NetBytes:
+                    var result = $"__{host}.{metric}";
+                    List<string> hostMetrics;
+                    // Only return this denormalized metric optimization if it's actually configured in the Bosun relay
+                    if (metricCache != null && metricCache.TryGetValue(host, out hostMetrics) && hostMetrics.Contains(result))
+                        return result;
+                    break;
             }
             return metric;
         }
@@ -225,9 +249,9 @@ namespace StackExchange.Opserver.Data.Dashboard.Providers
 
     public enum BosunMetricType
     {
-        gauge,
-        counter,
-        rate
+        gauge = 0,
+        counter = 1,
+        rate = 2
     }
 
     public class BosunMetricDescription
@@ -277,11 +301,11 @@ namespace StackExchange.Opserver.Data.Dashboard.Providers
         public List<float[]> Data { get; set; }
 
         private List<GraphPoint> _pointData;
-        public List<GraphPoint> PointData => (_pointData ?? (_pointData = Data.Select(p => new GraphPoint
+        public List<GraphPoint> PointData => _pointData ?? (_pointData = Data.Select(p => new GraphPoint
         {
             DateEpoch = (long) p[0],
             Value = p[1]
-        }).ToList()));
+        }).ToList());
 
         public PointSeries() { }
         public PointSeries(string host)

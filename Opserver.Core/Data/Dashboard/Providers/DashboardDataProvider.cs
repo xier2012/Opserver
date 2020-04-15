@@ -17,11 +17,27 @@ namespace StackExchange.Opserver.Data.Dashboard.Providers
         }
     }
 
-    public abstract class DashboardDataProvider : PollNode
+    public abstract class DashboardDataProvider : PollNode, IIssuesProvider
     {
         public abstract bool HasData { get; }
         public string Name { get; protected set; }
-        
+
+        public virtual IEnumerable<Issue> GetIssues()
+        {
+            foreach (var n in AllNodes)
+            {
+                if (n.Issues?.Count > 0)
+                {
+                    foreach (var i in n.Issues)
+                    {
+                        yield return i;
+                    }
+                }
+            }
+        }
+
+        public override string ToString() => GetType().Name;
+
         protected DashboardDataProvider(string uniqueKey) : base(uniqueKey) { }
 
         protected DashboardDataProvider(IProviderSettings settings) : base(settings.Name + "Dashboard")
@@ -45,64 +61,54 @@ namespace StackExchange.Opserver.Data.Dashboard.Providers
 
         public abstract List<Node> AllNodes { get; }
 
-        public Node GetNodeById(string id)
-        {
-            return AllNodes.FirstOrDefault(s => s.Id == id);
-        }
+        public Node GetNodeById(string id) => AllNodes.Find(s => s.Id == id);
 
         public Node GetNodeByHostname(string hostName)
         {
             if (!Current.Settings.Dashboard.Enabled || hostName.IsNullOrEmpty()) return null;
-            return AllNodes.FirstOrDefault(s => s.Name.ToLowerInvariant().Contains(hostName.ToLowerInvariant()));
+            return AllNodes.Find(s => s.Name.IndexOf(hostName, StringComparison.InvariantCultureIgnoreCase) >= 0);
         }
-        
-        public virtual IEnumerable<Node> GetNodesByIP(IPAddress ip)
-        {
-            return AllNodes.Where(n => n.IPs?.Contains(ip) == true);
-        }
+
+        public virtual IEnumerable<Node> GetNodesByIP(IPAddress ip) =>
+            AllNodes.Where(n => n.IPs?.Any(i => i.Contains(ip)) == true);
 
         public virtual string GetManagementUrl(Node node) { return null; }
-        public abstract Task<List<GraphPoint>> GetCPUUtilization(Node node, DateTime? start, DateTime? end, int? pointCount = null);
-        public abstract Task<List<GraphPoint>> GetMemoryUtilization(Node node, DateTime? start, DateTime? end, int? pointCount = null);
-        public abstract Task<List<DoubleGraphPoint>> GetNetworkUtilization(Node node, DateTime? start, DateTime? end, int? pointCount = null);
+        public abstract Task<List<GraphPoint>> GetCPUUtilizationAsync(Node node, DateTime? start, DateTime? end, int? pointCount = null);
+        public abstract Task<List<GraphPoint>> GetMemoryUtilizationAsync(Node node, DateTime? start, DateTime? end, int? pointCount = null);
+        public abstract Task<List<DoubleGraphPoint>> GetNetworkUtilizationAsync(Node node, DateTime? start, DateTime? end, int? pointCount = null);
+        public abstract Task<List<DoubleGraphPoint>> GetVolumePerformanceUtilizationAsync(Node node, DateTime? start, DateTime? end, int? pointCount = null);
 
-        public abstract Task<List<DoubleGraphPoint>> GetUtilization(Interface iface, DateTime? start, DateTime? end, int? pointCount = null);
-        
-        public abstract Task<List<GraphPoint>> GetUtilization(Volume volume, DateTime? start, DateTime? end, int? pointCount = null);
-        
+        public abstract Task<List<DoubleGraphPoint>> GetUtilizationAsync(Interface iface, DateTime? start, DateTime? end, int? pointCount = null);
+
+        public abstract Task<List<GraphPoint>> GetUtilizationAsync(Volume volume, DateTime? start, DateTime? end, int? pointCount = null);
+        public abstract Task<List<DoubleGraphPoint>> GetPerformanceUtilizationAsync(Volume volume, DateTime? start, DateTime? end, int? pointCount = null);
+
         public Application GetApplication(string id) => AllNodes.SelectMany(n => n.Apps.Where(a => a.Id == id)).FirstOrDefault();
 
         #endregion
 
-        #region Cache
-
         protected Cache<T> ProviderCache<T>(
             Func<Task<T>> fetch,
-            int cacheSeconds,
-            int? cacheFailureSeconds = null,
+            TimeSpan cacheDuration,
+            TimeSpan? cacheFailureDuration = null,
             bool affectsStatus = true,
             [CallerMemberName] string memberName = "",
             [CallerFilePath] string sourceFilePath = "",
             [CallerLineNumber] int sourceLineNumber = 0)
             where T : class
         {
-            return new Cache<T>(memberName, sourceFilePath, sourceLineNumber)
-                {
-                    AffectsNodeStatus = affectsStatus,
-                    CacheForSeconds = cacheSeconds,
-                    CacheFailureForSeconds = cacheFailureSeconds,
-                    UpdateCache = UpdateFromProvider(typeof (T).Name + "-List", fetch)
-                };
+            return new Cache<T>(this,
+                "Data Provieder Fetch: " + NodeType + ":" + typeof(T).Name,
+                cacheDuration,
+                fetch,
+                addExceptionData: e => e.AddLoggedData("NodeType", NodeType),
+                memberName: memberName,
+                sourceFilePath: sourceFilePath,
+                sourceLineNumber: sourceLineNumber)
+            {
+                AffectsNodeStatus = affectsStatus,
+                CacheFailureDuration = cacheFailureDuration
+            };
         }
-
-        public Action<Cache<T>> UpdateFromProvider<T>(string opName, Func<Task<T>> fetch) where T : class
-        {
-            return UpdateCacheItem(description: "Data Provieder Fetch: " + NodeType + ":" + opName,
-                                   getData: fetch,
-                                   addExceptionData: e => e.AddLoggedData("NodeType", NodeType),
-                                   logExceptions: true);
-        }
-
-        #endregion
     }
 }

@@ -1,17 +1,15 @@
 ﻿using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Linq;
 using System.Threading.Tasks;
 using System.Web;
+using System.Web.Hosting;
 using System.Web.Mvc;
 using System.Web.Optimization;
 using System.Web.Routing;
-using StackExchange.Exceptional;
 using StackExchange.Opserver.Data;
-using StackExchange.Opserver.Monitoring;
-using StackExchange.Profiling;
 using StackExchange.Opserver.Helpers;
+using StackExchange.Profiling;
 using StackExchange.Profiling.Mvc;
 
 namespace StackExchange.Opserver
@@ -22,7 +20,7 @@ namespace StackExchange.Opserver
         /// The time this application was spun up.
         /// </summary>
         public static readonly DateTime StartDate = DateTime.UtcNow;
-        
+
         public static void RegisterRoutes(RouteCollection routes)
         {
             routes.IgnoreRoute("{*allaspx}", new { allaspx = @".*\.aspx(/.*)?" });
@@ -31,13 +29,18 @@ namespace StackExchange.Opserver
             routes.MapMvcAttributeRoutes();
 
             // MUST be the last route as a catch-all!
-            routes.MapRoute("", "{*url}", new { controller = "Error", action = "PageNotFound" });
+            routes.MapRoute("", "{*url}", new { controller = "Home", action = "PageNotFound" });
         }
 
         private static void RegisterBundles(BundleCollection bundles)
         {
-            bundles.Add(new ScriptBundle("~/scripts/plugins.js").IncludeDirectory("~/Content/js/plugins", "*.js"));
-            bundles.Add(new ScriptBundle("~/scripts/scripts.js").Include("~/Content/js/Scripts*"));
+            bundles.Add(
+                new ScriptBundle("~/scripts/plugins.js")
+                    .Include("~/Content/bootstrap/js/bootstrap.min.js")
+                    .IncludeDirectory("~/Content/js/plugins", "*.js"));
+            bundles.Add(
+                new ScriptBundle("~/scripts/scripts.js")
+                    .Include("~/Content/js/Scripts*"));
         }
 
         public override void Init()
@@ -59,12 +62,17 @@ namespace StackExchange.Opserver
 
             SetupMiniProfiler();
 
-            ErrorStore.GetCustomData = GetCustomErrorData;
+            Exceptional.Exceptional.Settings.GetCustomData = GetCustomErrorData;
 
             TaskScheduler.UnobservedTaskException += (sender, args) => Current.LogException(args.Exception);
 
             // enable custom model binder
             ModelBinders.Binders.DefaultBinder = new ProfiledModelBinder();
+
+            // When settings change, reload the app pool
+            Current.Settings.OnChanged += HttpRuntime.UnloadAppDomain;
+
+            PollingEngine.Configure(t => HostingEnvironment.QueueBackgroundWorkItem(_ => t()));
         }
 
         protected void Application_End()
@@ -74,55 +82,44 @@ namespace StackExchange.Opserver
 
         private static void SetupMiniProfiler()
         {
-            MiniProfiler.Settings.RouteBasePath = "~/profiler/";
-            MiniProfiler.Settings.PopupRenderPosition = RenderPosition.Left;
-            var paths = MiniProfiler.Settings.IgnoredPaths.ToList();
-            paths.Add("/graph/");
-            paths.Add("/login");
-            MiniProfiler.Settings.IgnoredPaths = paths.ToArray();
-            MiniProfiler.Settings.PopupMaxTracesToShow = 5;
-            MiniProfiler.Settings.ProfilerProvider = new OpserverProfileProvider();
-            OpserverProfileProvider.EnablePollerProfiling = SiteSettings.PollerProfiling;
-
-            var copy = ViewEngines.Engines.ToList();
-            ViewEngines.Engines.Clear();
-            foreach (var item in copy)
+            var options = MiniProfiler.Configure(new MiniProfilerOptions()
             {
-                ViewEngines.Engines.Add(new ProfilingViewEngine(item));
-            }
+                RouteBasePath = "~/profiler/",
+                PopupRenderPosition = RenderPosition.Left,
+                PopupMaxTracesToShow = 5,
+                Storage = new MiniProfilerCacheStorage(TimeSpan.FromMinutes(10)),
+                ProfilerProvider = new AspNetRequestProvider(true)
+            }.IgnorePath("/graph")
+             .IgnorePath("/login")
+             .IgnorePath("/spark")
+             .IgnorePath("/top-refresh")
+             .AddViewProfiling()
+            );
+
+            Cache.EnableProfiling = SiteSettings.PollerProfiling;
+            Cache.LogExceptions = SiteSettings.LogPollerExceptions;
         }
 
         protected void Application_BeginRequest()
         {
-            Current.LogRequest();
             if (ShouldProfile())
-                MiniProfiler.Start();
+                MiniProfiler.StartNew();
         }
 
         protected void Application_EndRequest()
         {
-            if (ShouldProfile())
-                MiniProfiler.Stop();
+            MiniProfiler.Current?.Stop();
         }
 
-        public override string GetVaryByCustomString(HttpContext context, string arg)
-        {
-            if (arg.ToLower() == "highDPI")
-            {
-                return Current.IsHighDPI.ToString();
-            }
-            return base.GetVaryByCustomString(context, arg);
-        }
-
-        private static void GetCustomErrorData(Exception ex, HttpContext context, Dictionary<string, string> data)
+        private static void GetCustomErrorData(Exception ex, Dictionary<string, string> data)
         {
             // everything below needs a context
-            if (Current.Context != null)
+            if (Current.Context != null && Current.User != null)
             {
                 data.Add("User", Current.User.AccountName);
                 data.Add("Roles", Current.User.RawRoles.ToString());
             }
-            
+
             while (ex != null)
             {
                 foreach (DictionaryEntry de in ex.Data)
@@ -146,7 +143,7 @@ namespace StackExchange.Opserver
                 case SiteSettings.ProfilingModes.LocalOnly:
                     return HttpContext.Current.Request.IsLocal;
                 case SiteSettings.ProfilingModes.AdminOnly:
-                    return Current.User != null && Current.User.IsGlobalAdmin;
+                    return Current.User?.IsGlobalAdmin == true;
                 default:
                     return false;
             }

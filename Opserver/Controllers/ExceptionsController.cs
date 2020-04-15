@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Web;
 using System.Web.Mvc;
@@ -7,246 +8,275 @@ using StackExchange.Opserver.Helpers;
 using StackExchange.Opserver.Models;
 using StackExchange.Opserver.Views.Exceptions;
 using System.Threading.Tasks;
-using Microsoft.Ajax.Utilities;
 using StackExchange.Opserver.Data.Jira;
 
 namespace StackExchange.Opserver.Controllers
 {
-    [OnlyAllow(Roles.Exceptions)] 
+    [OnlyAllow(Roles.Exceptions)]
     public class ExceptionsController : StatusController
     {
-        protected override ISecurableSection SettingsSection => Current.Settings.Exceptions;
+        public const int MaxSearchResults = 2000;
 
-        protected override string TopTab => TopTabs.BuiltIn.Exceptions;
+        public override ISecurableModule SettingsModule => Current.Settings.Exceptions;
 
-        private JiraSettings JiraSettings => Current.Settings.Jira;
+        public override TopTab TopTab => new TopTab("Exceptions", nameof(Exceptions), this, 50)
+        {
+            GetMonitorStatus = () => ExceptionsModule.MonitorStatus,
+            GetBadgeCount = () => ExceptionsModule.TotalExceptionCount,
+            GetTooltip = () => ExceptionsModule.TotalRecentExceptionCount.ToComma() + " recent"
+        };
+
+        private List<ApplicationGroup> ApplicationGroups => CurrentStore.ApplicationGroups;
+        private ExceptionStore CurrentStore;
+        private string CurrentGroup;
+        private string CurrentLog;
+        private Guid? CurrentId;
+        private Guid? CurrentSimilarId;
+        private ExceptionSorts CurrentSort;
 
         protected override void OnActionExecuting(ActionExecutingContext filterContext)
         {
+            CurrentStore = ExceptionsModule.GetStore(Request.Params["store"]);
+            CurrentGroup = Request.Params["group"];
+            CurrentLog = Request.Params["log"] ?? Request.Params["app"]; // old link compat
+            CurrentId = Request.Params["id"].HasValue() && Guid.TryParse(Request.Params["id"], out var guid) ? guid : (Guid?)null;
+            CurrentSimilarId = Request.Params["similar"].HasValue() && Guid.TryParse(Request.Params["similar"], out var similarGuid) ? similarGuid : (Guid?)null;
+            Enum.TryParse(Request.Params["sort"], out CurrentSort);
+
+            if (CurrentLog.HasValue())
+            {
+                var storeApps = CurrentStore.Applications.Data;
+                var a = storeApps?.Find(app => app.Name == CurrentLog) ?? storeApps?.Find(app => app.ShortName == CurrentLog);
+                if (a != null)
+                {
+                    // Correct the log name to a found one, this enables short names to work.
+                    CurrentLog = a.Name;
+                    // Make pre-group links work correctly
+                    if (CurrentGroup.IsNullOrEmpty())
+                    {
+                        // Old links, that didn't know about groups
+                        var g = ApplicationGroups.Find(gr => gr[a.Name] != null);
+                        if (g != null)
+                        {
+                            CurrentGroup = g.Name;
+                        }
+                    }
+                }
+            }
+
             Response.Cache.SetCacheability(HttpCacheability.NoCache);
             Response.Cache.SetNoStore();
-            base.OnActionExecuting(filterContext); 
+            base.OnActionExecuting(filterContext);
         }
 
-        private string GetLogName(string log)
+        // TODO: Move entirely to model binder
+        private async Task<ExceptionStore.SearchParams> GetSearchAsync()
         {
-            var apps = ExceptionStores.Applications.ToList();
-            var app = apps.FirstOrDefault(a => a.Name == log) ?? apps.FirstOrDefault(a => a.ShortName == log);
-            return app != null ? app.Name : log;
+            var result = new ExceptionStore.SearchParams
+            {
+                Group = CurrentGroup,
+                Log = CurrentLog,
+                Sort = CurrentSort,
+                Id = CurrentId
+            };
+
+            if (Request.Params["q"].HasValue())
+            {
+                result.SearchQuery = Request.Params["q"];
+            }
+            if (bool.TryParse(Request.Params["includeDeleted"], out var includeDeleted))
+            {
+                result.IncludeDeleted = includeDeleted;
+            }
+
+            if (CurrentSimilarId.HasValue)
+            {
+                var error = await CurrentStore.GetErrorAsync(CurrentLog, CurrentSimilarId.Value).ConfigureAwait(false);
+                if (error != null)
+                {
+                    result.Message = error.Message;
+                }
+            }
+
+            return result;
+        }
+
+        private ExceptionsModel GetModel(List<Exceptional.Error> errors)
+        {
+            var group = CurrentGroup.HasValue() ? CurrentStore.ApplicationGroups.Find(g => g.Name == CurrentGroup) : null;
+            var log = group != null && CurrentLog.HasValue() ? group.Applications.Find(a => a.Name == CurrentLog) : null;
+            // Handle single-log groups a bit more intuitively so things like clear all work
+            if (log == null && group?.Applications.Count == 1)
+            {
+                log = group.Applications[0];
+            }
+            return new ExceptionsModel
+            {
+                Store = CurrentStore,
+                Groups = ApplicationGroups,
+                Group = group,
+                Log = log,
+                Sort = CurrentSort,
+                Errors = errors
+            };
         }
 
         [Route("exceptions")]
-        public ActionResult Exceptions(string log, ExceptionSorts? sort = null, int? count = null)
+        public async Task<ActionResult> Exceptions()
         {
-            // Defaults
-            count = count ?? 250;
-            sort = sort ?? ExceptionSorts.TimeDesc;
+            var search = await GetSearchAsync().ConfigureAwait(false);
+            var errors = await CurrentStore.GetErrorsAsync(search).ConfigureAwait(false);
 
-            var vd = GetExceptionsModel(log, sort.Value, count.Value, loadAsync: 500);
+            var vd = GetModel(errors);
+            vd.SearchParams = search;
+            vd.LoadAsyncSize = Current.Settings.Exceptions.PageSize;
             return View(vd);
         }
 
         [Route("exceptions/load-more")]
-        public ActionResult ExceptionsLoadMore(string log, ExceptionSorts sort, int? count = null, Guid? prevLast = null)
+        public async Task<ActionResult> LoadMore(int? count = null, Guid? prevLast = null)
         {
-            var vd = GetExceptionsModel(log, sort, count, prevLast);
+            var search = await GetSearchAsync().ConfigureAwait(false);
+            search.Count = count ?? Current.Settings.Exceptions.PageSize;
+            search.StartAt = prevLast;
+
+            var errors = await CurrentStore.GetErrorsAsync(search).ConfigureAwait(false);
+            var vd = GetModel(errors);
+            vd.SearchParams = search;
             return View("Exceptions.Table.Rows", vd);
         }
 
-        public ExceptionsModel GetExceptionsModel(string log, ExceptionSorts sort, int? count = null, Guid? prevLast = null, int? loadAsync = null)
-        {
-            log = GetLogName(log);
-
-            var errors = ExceptionStores.GetAllErrors(log, sort: sort);
-
-            var startIndex = 0;
-            if (prevLast.HasValue)
-            {
-                startIndex = errors.FindIndex(e => e.GUID == prevLast.Value);
-                if (startIndex > 0 && startIndex < errors.Count) startIndex++;
-            }
-            errors = errors.Skip(startIndex).Take(count ?? 500).ToList();
-            var vd = new ExceptionsModel
-            {
-                Sort = sort,
-                SelectedLog = log,
-                LoadAsyncSize = loadAsync.GetValueOrDefault(),
-                Applications = ExceptionStores.Applications,
-                Errors = errors.ToList()
-            };
-            return vd;
-        }
-
-        [Route("exceptions/similar")]
-        public async Task<ActionResult> ExceptionsSimilar(string log, Guid id, ExceptionSorts? sort = null, bool truncate = true, bool byTime = false)
-        {
-            // Defaults
-            sort = sort ?? ExceptionSorts.TimeDesc;
-            log = GetLogName(log);
-            var e = await ExceptionStores.GetError(log, id);
-            if (e == null)
-                return View("Exceptions.Detail", null);
-
-            var errors = await ExceptionStores.GetSimilarErrorsAsync(e, byTime, sort: sort.Value);
-            var vd = new ExceptionsModel
-            {
-                Sort = sort.Value,
-                Exception = e,
-                SelectedLog = log,
-                ShowingWindow = byTime,
-                Applications = ExceptionStores.Applications,
-                ClearLinkForVisibleOnly = true,
-                Errors = errors
-            };
-            return View("Exceptions.Similar", vd);
-        }
-
-        [Route("exceptions/search")]
-        public async Task<ActionResult> ExceptionsSearch(string q, string log, ExceptionSorts? sort = null, bool showDeleted = false)
-        {
-            // Defaults
-            sort = sort ?? ExceptionSorts.TimeDesc;
-            log = GetLogName(log);
-
-            // empty searches go back to the main log
-            if (q.IsNullOrEmpty())
-                return RedirectToAction("Exceptions", new { log });
-
-            var errors = await ExceptionStores.FindErrorsAsync(q, log, includeDeleted: showDeleted, max: 2000, sort: sort.Value);
-            if (!errors.Any() && !showDeleted)
-            {
-                // If we didn't find any current errors, go ahead and search deleted as well
-                return RedirectToAction("ExceptionsSearch", new { q, log, showDeleted = true });
-            }
-
-            var vd = new ExceptionsModel
-            {
-                Sort = sort.Value,
-                Search = q,
-                SelectedLog = log,
-                ShowDeleted = showDeleted,
-                Applications = ExceptionStores.Applications,
-                ClearLinkForVisibleOnly = true,
-                Errors = errors
-            };
-            return View("Exceptions.Search", vd);
-        }
-
         [Route("exceptions/detail")]
-        public async Task<ActionResult> ExceptionDetail(string app, Guid id)
+        public async Task<ActionResult> Detail(Guid id)
         {
-            var e = await ExceptionStores.GetError(app, id);
-            return View("Exceptions.Detail", e);
+            var e = await CurrentStore.GetErrorAsync(CurrentLog, id).ConfigureAwait(false);
+            var vd = GetModel(null);
+            vd.Exception = e;
+            return View("Exceptions.Detail", vd);
         }
 
         [Route("exceptions/preview")]
-        public async Task<ActionResult> ExceptionPreview(string app, Guid id)
+        public async Task<ActionResult> Preview(Guid id)
         {
-            var e = await ExceptionStores.GetError(app, id);
-            return View("Exceptions.Preview", e);
+            var e = await CurrentStore.GetErrorAsync(CurrentLog, id).ConfigureAwait(false);
+
+            var vd = GetModel(null);
+            vd.Exception = e;
+            return PartialView("Exceptions.Preview", vd);
         }
 
         [Route("exceptions/detail/json"), AlsoAllow(Roles.Anonymous)]
-        public async Task<JsonResult> ExceptionDetailJson(string app, Guid id)
+        public async Task<JsonResult> DetailJson(Guid id)
         {
-            var e = await ExceptionStores.GetError(app, id);
-            return e != null
-                       ? Json(new
-                       {
-                           e.GUID,
-                           e.ErrorHash,
-                           e.ApplicationName,
-                           e.Type,
-                           e.Source,
-                           e.Message,
-                           e.Detail,
-                           e.MachineName,
-                           e.SQL,
-                           e.Host,
-                           e.Url,
-                           e.HTTPMethod,
-                           e.IPAddress,
-                           e.DuplicateCount,
-                           CreationDate = e.CreationDate.ToEpochTime(),
-                       })
-                       : JsonNotFound();
+            var e = await CurrentStore.GetErrorAsync(CurrentLog, id).ConfigureAwait(false);
+            if (e == null)
+            {
+                return JsonNotFound();
+            }
+            else
+            {
+                return Json(new
+                {
+                    e.GUID,
+                    e.ErrorHash,
+                    e.ApplicationName,
+                    e.Type,
+                    e.Source,
+                    e.Message,
+                    e.Detail,
+                    e.MachineName,
+                    e.Host,
+                    e.FullUrl,
+                    e.HTTPMethod,
+                    e.IPAddress,
+                    e.DuplicateCount,
+                    CreationDate = e.CreationDate.ToEpochTime(),
+                    e.Commands,
+                });
+            }
         }
 
         [Route("exceptions/protect"), HttpPost, AcceptVerbs(HttpVerbs.Post), OnlyAllow(Roles.ExceptionsAdmin)]
-        public async Task<ActionResult> ExceptionsProtect(string log, Guid id)
+        public async Task<ActionResult> Protect(Guid id, bool redirect = false)
         {
-            var success = await ExceptionStores.Action(log, s => s.ProtectError(id));
-            return success ? ExceptionCounts() : JsonError("Unable to protect, error was not found in the log");
+            var success = await CurrentStore.ProtectErrorAsync(id).ConfigureAwait(false);
+            if (!success) JsonError("Unable to protect, error was not found in the log");
+            return redirect ? Json(new { url = Url.Action(nameof(Exceptions), new { store = CurrentStore.Name, group = CurrentGroup, log = CurrentLog }) }) : Counts();
         }
 
         [Route("exceptions/delete"), HttpPost, AcceptVerbs(HttpVerbs.Post), OnlyAllow(Roles.ExceptionsAdmin)]
-        public async Task<ActionResult> ExceptionsDelete(string log, Guid id, bool redirect = false)
+        public async Task<ActionResult> Delete()
         {
+            var toDelete = await GetSearchAsync().ConfigureAwait(false);
             // we don't care about success...if it's *already* deleted, that's fine
             // if we throw an exception trying to delete, that's another matter
-            await ExceptionStores.Action(log, s => s.DeleteError(id));
+            if (toDelete.Id.HasValue)
+            {
+                // optimized single route
+                await CurrentStore.DeleteErrorAsync(toDelete.Id.Value).ConfigureAwait(false);
+            }
+            else
+            {
+                await CurrentStore.DeleteErrorsAsync(toDelete).ConfigureAwait(false);
+            }
 
-            return redirect ? Json(new { url = Url.Action("Exceptions", new { log }) }) : ExceptionCounts();
-        }
-
-        [Route("exceptions/delete-all"), HttpPost, AcceptVerbs(HttpVerbs.Post), OnlyAllow(Roles.ExceptionsAdmin)]
-        public async Task<ActionResult> ExceptionsDeleteAll(string log)
-        {
-            await ExceptionStores.Action(log, s => s.DeleteAllErrors(log));
-
-            return Json(new { url = Url.Action("Exceptions") });
-        }
-
-        [Route("exceptions/delete-similar"), AcceptVerbs(HttpVerbs.Post), OnlyAllow(Roles.ExceptionsAdmin)]
-        public async Task<ActionResult> ExceptionsDeleteSimilar(string log, Guid id)
-        {
-            var e = await ExceptionStores.GetError(log, id);
-            await ExceptionStores.Action(e.ApplicationName, s => s.DeleteSimilarErrors(e));
-
-            return Json(new { url = Url.Action("Exceptions", new { log }) });
+            return toDelete.Id.HasValue
+                ? Counts()
+                : Json(new { url = Url.Action(nameof(Exceptions), new { store = CurrentStore.Name, group = CurrentGroup, log = CurrentLog }) });
         }
 
         [Route("exceptions/delete-list"), AcceptVerbs(HttpVerbs.Post), OnlyAllow(Roles.ExceptionsAdmin)]
-        public async Task<ActionResult> ExceptionsDeleteList(string log, Guid[] ids, bool returnCounts = false)
+        public async Task<ActionResult> DeleteList(Guid[] ids, bool returnCounts = false)
         {
             if (ids == null || ids.Length == 0) return Json(true);
-            await ExceptionStores.Action(log, s => s.DeleteErrors(log, ids.ToList()));
+            await CurrentStore.DeleteErrorsAsync(ids.ToList()).ConfigureAwait(false);
 
-            return returnCounts ? ExceptionCounts() : Json(new { url = Url.Action("Exceptions", new { log }) });
+            return returnCounts ? Counts() : Json(new { url = Url.Action("Exceptions", new { store = CurrentStore.Name, log = CurrentLog, group = CurrentGroup }) });
         }
 
         [Route("exceptions/counts")]
-        public ActionResult ExceptionCounts()
+        public ActionResult Counts()
         {
-            return Json(
-                ExceptionStores.Applications.GroupBy(a => a.Name).Select(
-                    g =>
-                    new
-                        {
-                            Name = g.Key,
-                            ExceptionCount = g.Sum(a => a.ExceptionCount),
-                            MostRecent = g.Max(a => a.MostRecent)
-                        })
-                );
+            var stores = ExceptionsModule.Stores.Select(s => new
+            {
+                s.Name,
+                Total = s.TotalExceptionCount
+            });
+            var groups = ApplicationGroups.Select(g => new
+            {
+                g.Name,
+                g.Total,
+                Applications = g.Applications.Select(a => new
+                {
+                    a.Name,
+                    Total = a.ExceptionCount
+                })
+            });
+            return Json(new
+            {
+                Stores = stores,
+                Groups = groups,
+                Total = ExceptionsModule.TotalExceptionCount
+            });
         }
 
         [Route("exceptions/jiraactions"), AcceptVerbs(HttpVerbs.Get), OnlyAllow(Roles.ExceptionsAdmin)]
         public ActionResult JiraActions(string appName)
         {
-            var issues = JiraSettings.GetActionsForApplication(appName);
+            var issues = Current.Settings.Jira.GetActionsForApplication(appName);
             return View("Exceptions.Jira", issues);
         }
 
         [Route("exceptions/jiraaction"), AcceptVerbs(HttpVerbs.Post), OnlyAllow(Roles.ExceptionsAdmin)]
-        public async Task<ActionResult> JiraAction(string log, Guid id, int actionid, bool redirect = false)
+        public async Task<ActionResult> JiraAction(Guid id, int actionid)
         {
-            var e = await ExceptionStores.GetError(log, id);
+            var e = await CurrentStore.GetErrorAsync(CurrentLog, id).ConfigureAwait(false);
             var user = Current.User;
-            var action = JiraSettings.Actions.FirstOrDefault(i => i.Id == actionid);
-            var jiraClient = new JiraClient(JiraSettings);
-            var result = await jiraClient.CreateIssue(action, e, user == null ? String.Empty : user.AccountName);
+            var action = Current.Settings.Jira.Actions.Find(i => i.Id == actionid);
+            var jiraClient = new JiraClient(Current.Settings.Jira);
+            var result = await jiraClient.CreateIssueAsync(action, e, user == null ? "" : user.AccountName).ConfigureAwait(false);
 
-            if (result.Key.IsNullOrWhiteSpace())
+            if (string.IsNullOrWhiteSpace(result.Key))
             {
                 return Json(new
                 {
@@ -254,16 +284,13 @@ namespace StackExchange.Opserver.Controllers
                     message = "Can not create issue"
                 });
             }
-            else
-            {
-                return Json(new
-                {
-                    success = true,
-                    issueKey = result.Key,
-                    browseUrl = result.BrowseUrl
-                });
-            }
 
+            return Json(new
+            {
+                success = true,
+                issueKey = result.Key,
+                browseUrl = result.BrowseUrl
+            });
         }
     }
 }

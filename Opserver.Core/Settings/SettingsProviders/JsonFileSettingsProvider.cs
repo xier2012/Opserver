@@ -14,6 +14,14 @@ namespace StackExchange.Opserver.SettingsProviders
         {
             if (Path.StartsWith("~\\"))
                 Path = Path.Replace("~\\", AppDomain.CurrentDomain.BaseDirectory);
+            AddDirectoryWatcher();
+        }
+
+        protected void AddDirectoryWatcher()
+        {
+            var watcher = new FileSystemWatcher(Path);
+            watcher.Changed += (s, args) => SettingsChanged();
+            watcher.EnableRaisingEvents = true;
         }
 
         private readonly object _loadLock = new object();
@@ -21,19 +29,14 @@ namespace StackExchange.Opserver.SettingsProviders
 
         public override T GetSettings<T>()
         {
-            object cached;
-            if (_settingsCache.TryGetValue(typeof (T), out cached))
-                return (T) cached;
-
             lock (_loadLock)
             {
-                if (_settingsCache.TryGetValue(typeof (T), out cached))
-                    return (T) cached;
+                if (_settingsCache.TryGetValue(typeof(T), out object cached))
+                    return (T)cached;
 
                 var settings = GetFromFile<T>();
                 if (settings == null)
                     return null;
-                AddUpdateWatcher(settings);
                 _settingsCache.TryAdd(typeof (T), settings);
                 return settings;
             }
@@ -42,20 +45,6 @@ namespace StackExchange.Opserver.SettingsProviders
         public override T SaveSettings<T>(T settings)
         {
             return settings;
-        }
-
-        private void AddUpdateWatcher<T>(T settings) where T : Settings<T>, new()
-        {
-            var watcher = new FileSystemWatcher(Path, typeof (T).Name + ".json")
-                {
-                    NotifyFilter = NotifyFilters.LastWrite
-                };
-            watcher.Changed += (s, args) =>
-                {
-                    var newSettings = GetFromFile<T>();
-                    settings.UpdateSettings(newSettings);
-                };
-            watcher.EnableRaisingEvents = true;
         }
 
         private string GetFullFileName<T>()
@@ -87,7 +76,7 @@ namespace StackExchange.Opserver.SettingsProviders
                 // A race on reloads can happen - ignore as this is during shutdown
                 if (!e.Message.Contains("The process cannot access the file"))
                     Opserver.Current.LogException("Error loading settings from " + path, e);
-                return default(T);
+                return new T();
             }
         }
     }

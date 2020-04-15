@@ -10,46 +10,75 @@ namespace StackExchange.Opserver.Views.Exceptions
     public class ExceptionsModel
     {
         private NameValueCollection _requestQueryString;
-        public NameValueCollection RequestQueryString
-        {
-            get { return _requestQueryString ?? (_requestQueryString = HttpUtility.ParseQueryString(Current.Request.QueryString.ToString())); }
-        }
+        public NameValueCollection RequestQueryString => _requestQueryString ?? (_requestQueryString = HttpUtility.ParseQueryString(Current.Request.QueryString.ToString()));
 
+        public ExceptionStore Store { get; internal set; }
+        public List<ApplicationGroup> Groups { get; set; }
+        public ApplicationGroup Group { get; set; }
+        public Application Log { get; set; }
         public ExceptionSorts Sort { get; set; }
-        public string SelectedLog { get; set; }
-        public bool ShowingWindow { get; set; }
 
-        public string Search { get; set; }
+        public string Search => SearchParams?.SearchQuery;
+        public ExceptionStore.SearchParams SearchParams { get; set; }
         public Error Exception { get; set; }
-        public List<Application> Applications { get; set; }
         public List<Error> Errors { get; set; }
 
-        public bool ClearLinkForVisibleOnly { get; set; }
-
-        public bool ShowClearLink
-        {
-            get { return SelectedLog.HasValue() && Errors.Any(e => !e.IsProtected) && Current.User.IsExceptionAdmin; }
-        }
+        public bool ShowAll => Group == null && Log == null;
+        private int? _shownCount;
+        public int ShownCount => _shownCount ?? (_shownCount = Errors.Sum(e => e.DuplicateCount)).Value;
+        public bool ShowClearLink => Current.User.IsExceptionAdmin && Errors.Any(e => !e.IsProtected) && (Log != null || SearchParams.SearchQuery.HasValue() || SearchParams.SearchQuery.HasValue());
+        public bool ShowDeleted { get; set; }
 
         public int LoadAsyncSize { get; set; }
 
-        public bool ShowDeleted { get; set; }
-        public bool ShowAll { get { return SelectedLog.IsNullOrEmpty(); } }
         private int? _totalCount;
-        public int TotalCount { get { return _totalCount ?? (_totalCount = Applications.Where(a => ShowAll || a.Name == SelectedLog).Sum(a => a.ExceptionCount)).Value; } }
+        public int TotalCount => _totalCount ?? (_totalCount = GetTotal()).Value;
+        private int GetTotal() => Log?.ExceptionCount ?? Group?.Total ?? Store?.TotalExceptionCount ?? ExceptionsModule.TotalExceptionCount;
+
+        public bool HasMore => TotalCount > ShownCount;
         public string Title
         {
             get
             {
                 if (Search.HasValue())
                 {
-                    return string.Format("{0} Search results ({1} exceptions) for '{2}'{3}", Errors.Count, Errors.Sum(e => e.DuplicateCount).ToComma(), Search, SelectedLog.HasValue() ? " in " + SelectedLog : "");
+                    return $"Showing search results for '{Search}'{(Log != null ? " in " + Log.Name : "")}";
                 }
-                if (Exception == null)
+                if (SearchParams.Message.HasValue())
                 {
-                    return TotalCount.Pluralize((SelectedLog + " Exception").Trim());
+                    return $"Most recent similar entries ({Errors.Sum(e => e.DuplicateCount).ToComma()} exceptions) from {Log?.Name}";
                 }
-                return string.Format("Most recent {0} similar entries ({1} exceptions) from {2}", Errors.Count, Errors.Sum(e => e.DuplicateCount).ToComma(), SelectedLog);
+
+                if (Log != null)
+                {
+                    return Log.ExceptionCount.Pluralize(Log.Name + " Exception");
+                }
+                else if (Group != null)
+                {
+                    return Group.Total.Pluralize(Group.Name + " Exception");
+                }
+                else if (Store != null)
+                {
+                    return Store.TotalExceptionCount.Pluralize(Store.Name + " Exception");
+                }
+                else
+                {
+                    return TotalCount.Pluralize("Exception");
+                }
+            }
+        }
+
+        public Dictionary<string, string> SearchDictionary
+        {
+            get
+            {
+                if (Store == null && Group == null && Log == null) return null;
+
+                var result = new Dictionary<string, string>();
+                if (Store != null) result["store"] = Store.Name;
+                if (Group != null) result["group"] = Group.Name;
+                if (Log != null) result["log"] = Log.Name;
+                return result;
             }
         }
     }

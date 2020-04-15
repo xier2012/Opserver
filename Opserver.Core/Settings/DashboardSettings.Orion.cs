@@ -18,12 +18,12 @@
         /// <summary>
         /// Default maximum timeout in milliseconds before giving up on fetching data from this provider
         /// </summary>
-        public int QueryTimeoutMs { get; set; }
+        public int QueryTimeoutMs { get; set; } = 10 * 1000;
 
-        public OrionSettings()
-        {
-            QueryTimeoutMs = 10 * 1000;
-        }
+        /// <summary>
+        /// Whether to show child statuses if the node is overall healthy. Example: warning if any drives are in warning state.
+        /// </summary>
+        public bool ChildStatusForHealthy { get; set; } = false;
 
         public void Normalize()
         {

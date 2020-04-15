@@ -1,48 +1,23 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
 
 namespace StackExchange.Opserver
 {
-    public partial class DashboardSettings : Settings<DashboardSettings>, INodeSettings
+    public class DashboardSettings : ModuleSettings, INodeSettings
     {
         public override bool Enabled => Providers.Any();
 
-        public List<Category> Categories { get; set; }
-        
-        public ProvidersSettings Providers { get; set; }
+        public List<Category> Categories { get; set; } = new List<Category>();
 
-        public List<NodeSettings> PerNodeSettings { get; set; }
+        public ProvidersSettings Providers { get; set; } = new ProvidersSettings();
 
-        public bool ShowOther { get; set; }
+        public List<NodeSettings> PerNodeSettings { get; set; } = new List<NodeSettings>();
 
-        public DashboardSettings()
-        {
-            Categories = new List<Category>();
-            Providers = new ProvidersSettings();
-            PerNodeSettings = new List<NodeSettings>();
-            ShowOther = true;
-        }
+        public bool ShowOther { get; set; } = true;
 
-        public NodeSettings GetNodeSettings(string node, Category c)
-        {
-            var s = PerNodeSettings?.FirstOrDefault(n => n.PatternRegex.IsMatch(node));
-            
-            // Grab setting from node, then category, then global
-            Func<Func<INodeSettings, decimal?>, decimal?> getVal = f => (s != null ? f(s) : null) ?? f(c) ?? f(this);
-
-            return new NodeSettings
-                {
-                    CPUWarningPercent = getVal(i => i.CPUWarningPercent),
-                    CPUCriticalPercent = getVal(i => i.CPUCriticalPercent),
-                    MemoryWarningPercent = getVal(i => i.MemoryWarningPercent),
-                    MemoryCriticalPercent = getVal(i => i.MemoryCriticalPercent),
-                    DiskWarningPercent = getVal(i => i.DiskWarningPercent),
-                    DiskCriticalPercent = getVal(i => i.DiskCriticalPercent),
-                    PrimaryInterfacePatternRegex = s?.PrimaryInterfacePatternRegex ?? c.PrimaryInterfacePatternRegex
-                };
-        }
+        public NodeSettings GetNodeSettings(string node) =>
+            PerNodeSettings?.FirstOrDefault(n => n.PatternRegex.IsMatch(node)) ?? NodeSettings.Empty;
 
         #region Direct Properties
 
@@ -81,12 +56,33 @@ namespace StackExchange.Opserver
         /// </summary>
         public decimal? DiskCriticalPercent { get; set; }
 
+        /// <summary>
+        /// Whether to show volume performance on the dashboard
+        /// </summary>
+        public bool ShowVolumePerformance { get; set; }
+
+        /// <summary>
+        /// The Pattern to match on node services, all services matching this pattern will be shown on the dashboard. 
+        /// </summary>
+        public string ServicesPattern { get; set; }
+
+        private Regex _servicesPatternRegEx;
+        public Regex ServicesPatternRegEx
+        {
+            get { return _servicesPatternRegEx ?? (_servicesPatternRegEx = GetPatternMatcher(ServicesPattern)); }
+            set { _servicesPatternRegEx = value; }
+        }
+
+        protected Regex GetPatternMatcher(string pattern)
+        {
+            return pattern.IsNullOrEmpty() ? null : new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
+        }
         #endregion
 
         /// <summary>
         /// Category that a server belongs to
         /// </summary>
-        public class Category : INodeSettings, ISettingsCollectionItem<Category>
+        public class Category : INodeSettings, ISettingsCollectionItem
         {
             /// <summary>
             /// The name that appears for this category
@@ -147,13 +143,26 @@ namespace StackExchange.Opserver
             /// Percent at which disk utilization on a node is marked at a critical level
             /// </summary>
             public decimal? DiskCriticalPercent { get; set; }
+
+            /// <summary>
+            /// The Pattern to match on node services, all services matching this pattern will be shown on the dashboard. 
+            /// </summary>
+            public string ServicesPattern { get; set; }
+
+            private Regex _servicesPatternRegEx;
+            public Regex ServicesPatternRegEx
+            {
+                get { return _servicesPatternRegEx ?? (_servicesPatternRegEx = GetPatternMatcher(ServicesPattern)); }
+                set { _servicesPatternRegEx = value; }
+            }
         }
 
         /// <summary>
         /// Addtional per-node settings
         /// </summary>
-        public class NodeSettings : INodeSettings, ISettingsCollectionItem<NodeSettings>
+        public class NodeSettings : INodeSettings, ISettingsCollectionItem
         {
+            public static NodeSettings Empty { get; } = new NodeSettings();
             string ISettingsCollectionItem.Name => Pattern;
 
             /// <summary>
@@ -210,6 +219,18 @@ namespace StackExchange.Opserver
             /// Percent at which disk utilization on a node is marked at a critical level
             /// </summary>
             public decimal? DiskCriticalPercent { get; set; }
+
+            /// <summary>
+            /// The Pattern to match on node services, all services matching this pattern will be shown on the dashboard. 
+            /// </summary>
+            public string ServicesPattern { get; set; }
+
+            private Regex _servicesPatternRegEx;
+            public Regex ServicesPatternRegEx
+            {
+                get { return _servicesPatternRegEx ?? (_servicesPatternRegEx = GetPatternMatcher(ServicesPattern)); }
+                set { _servicesPatternRegEx = value; }
+            }
         }
     }
 
@@ -222,5 +243,6 @@ namespace StackExchange.Opserver
         decimal? MemoryCriticalPercent { get; set; }
         decimal? DiskWarningPercent { get; set; }
         decimal? DiskCriticalPercent { get; set; }
+        Regex ServicesPatternRegEx { get; set; }
     }
 }

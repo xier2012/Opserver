@@ -1,16 +1,10 @@
-﻿using System;
-
-namespace StackExchange.Opserver
+﻿namespace StackExchange.Opserver
 {
-    public interface ISecurableSection
+    public interface ISecurableModule
     {
         bool Enabled { get; }
         string ViewGroups { get; }
         string AdminGroups { get; }
-    }
-
-    public interface ISettingsCollectionItem<T> : ISettingsCollectionItem
-    {
     }
 
     public interface ISettingsCollectionItem
